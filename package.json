@@ -1,0 +1,41 @@
+{
+  "name": "ergani-saas",
+  "version": "1.0.0",
+  "description": "Ψηφιακή Κάρτα Εργασίας — SaaS Chatbot Platform με GPS Geofencing & ΕΡΓΑΝΗ ΙΙ Integration",
+  "private": true,
+  "scripts": {
+    "dev:gateway": "node services/webhook-gateway/index.js",
+    "dev:processor": "node services/message-processor/index.js",
+    "dev:scheduler": "node services/scheduler/index.js",
+    "test": "jest --verbose",
+    "test:unit": "jest --testPathPattern=tests/unit --verbose",
+    "test:integration": "jest --testPathPattern=tests/integration --verbose",
+    "test:gdpr": "jest --testPathPattern=gdpr --verbose",
+    "lint": "eslint .",
+    "migrate": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/migrations/001_initial.sql",
+    "seed": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/seeds/demo_data.sql"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/rate-limit": "^10.2.0",
+    "pg": "^8.13.0",
+    "ioredis": "^5.4.0",
+    "kafkajs": "^2.2.4",
+    "axios": "^1.7.0",
+    "luxon": "^3.5.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "node-cron": "^3.0.3",
+    "uuid": "^11.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^9.18.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

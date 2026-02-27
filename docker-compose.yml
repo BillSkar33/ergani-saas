@@ -1,0 +1,81 @@
+# ============================================================
+# Docker Compose — Υποδομή για Ψηφιακή Κάρτα Εργασίας SaaS
+# Περιλαμβάνει: PostgreSQL 16, Redis 7, Kafka + Zookeeper
+# ============================================================
+
+services:
+  # --- PostgreSQL 16: Κύρια βάση δεδομένων ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: ergani-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ergani_db # Όνομα βάσης δεδομένων
+      POSTGRES_USER: ergani_user # Χρήστης βάσης
+      POSTGRES_PASSWORD: ergani_secure_pass_2026 # Κωδικός (αλλαγή στο production!)
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Αυτόματη εκτέλεση migration κατά το πρώτο startup
+      - ./infrastructure/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ergani_user -d ergani_db" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis 7: Cache, Sessions, JWT Token Cache ---
+  redis:
+    image: redis:7-alpine
+    container_name: ergani-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Zookeeper: Απαιτείται από το Kafka ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: ergani-zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181 # Port για client connections
+      ZOOKEEPER_TICK_TIME: 2000 # Βασικό χρονικό διάστημα tick (ms)
+
+  # --- Apache Kafka: Message Broker ---
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: ergani-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 # Μόνο 1 replica (development)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true" # Αυτόματη δημιουργία topics
+      KAFKA_LOG_RETENTION_HOURS: 168 # Κράτηση μηνυμάτων 7 ημέρες
+    healthcheck:
+      test: [ "CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+# --- Named Volumes: Μόνιμη αποθήκευση δεδομένων ---
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local

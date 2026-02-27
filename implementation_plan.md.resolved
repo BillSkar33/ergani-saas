@@ -1,0 +1,1132 @@
+# Αναλυτικό Implementation Plan: Ψηφιακή Κάρτα Εργασίας — SaaS Chatbot Platform
+
+## Σύνοψη Προβλήματος
+
+Το ΕΡΓΑΝΗ ΙΙ (ενεργό από 16/02/2026) απαιτεί real-time χρονοσήμανση (check-in/check-out) εργαζομένων. Οι υπάρχουσες λύσεις (δωρεάν CardScanner tablet ή ακριβά ERP/HRMS) αφήνουν τεράστιο κενό για τις μικρομεσαίες επιχειρήσεις. Η λύση μας: **SaaS Chatbot** μέσω Viber/Telegram/WhatsApp με GPS Geofencing — μηδενικό κόστος εξοπλισμού για τον εργοδότη.
+
+---
+
+## ΜΕΡΟΣ Α: USE CASES & ΑΡΧΙΤΕΚΤΟΝΙΚΗ
+
+---
+
+### 1. Αναλυτικά Use Cases
+
+#### UC-01: Onboarding Εργοδότη (Employer Registration)
+
+```mermaid
+sequenceDiagram
+    actor Employer as Εργοδότης
+    participant Portal as SaaS Web Portal
+    participant DB as Database
+    participant ERGANI as ΕΡΓΑΝΗ ΙΙ
+
+    Employer->>Portal: Εγγραφή (email, ΑΦΜ εταιρείας)
+    Portal->>DB: Δημιουργία λογαριασμού
+    Employer->>Portal: Δημιουργία Χρήστη Παραρτήματος στο ΕΡΓΑΝΗ
+    Note over Employer,ERGANI: [Χρήση μόνο από Υπηρεσίες Διαλειτουργικότητας] = ΝΑΙ
+    ERGANI-->>Employer: Username + Password (Branch User)
+    Employer->>Portal: Εισαγωγή credentials Branch User
+    Portal->>DB: Αποθήκευση (AES-256 encrypted)
+    Employer->>Portal: Καταχώρηση GPS συντεταγμένων καταστήματος
+    Employer->>Portal: Ορισμός ακτίνας geofence (π.χ. 40m)
+    Employer->>Portal: Καταχώρηση υπαλλήλων (ΑΦΜ, όνομα, messenger ID)
+```
+
+**Actors**: Εργοδότης
+**Preconditions**: Ο εργοδότης έχει πρόσβαση στο eservices.yeka.gr
+**Βήματα**:
+1. Εγγραφή στο SaaS portal (email, ΑΦΜ εταιρείας, στοιχεία)
+2. Δημιουργία Branch User στο ΕΡΓΑΝΗ (με δικαίωμα **μόνο** "Δήλωση Έναρξης/Λήξης Εργασίας")
+3. Ενεργοποίηση `[Χρήση μόνο από Υπηρεσίες Διαλειτουργικότητας] = ΝΑΙ`
+4. Εισαγωγή credentials στο SaaS portal → κρυπτογράφηση AES-256
+5. Καταχώρηση GPS του καταστήματος (pin σε χάρτη ή manual lat/lng)
+6. Ορισμός geofence radius (default 40m, configurable 10-200m)
+7. Καταχώρηση υπαλλήλων: ΑΦΜ, Επώνυμο, Όνομα, Τηλ/Viber ID/Telegram ID
+8. Επιλογή αριθμού παραρτήματος (`f_aa`)
+
+**Postconditions**: Η επιχείρηση είναι ενεργή στο σύστημα
+
+**Edge Cases**:
+- Λάθος credentials → Test call στο ERGANI sandbox → error feedback
+- Πολλαπλά παραρτήματα → κάθε ένα με δικό geofence & `f_aa`
+- Αλλαγή credentials → re-encryption, invalidate cached JWT
+
+---
+
+#### UC-02: Εγγραφή Εργαζομένου στο Chatbot (Employee Linking)
+
+**Actors**: Εργαζόμενος
+**Preconditions**: Ο εργοδότης έχει καταχωρήσει τον εργαζόμενο στο portal
+
+**Βήματα**:
+1. Ο εργαζόμενος ανοίγει το Chatbot (Viber/Telegram/WhatsApp)
+2. Πατάει "ΕΓΓΡΑΦΗ" / `/start`
+3. Εισάγει τον μοναδικό 6ψήφιο κωδικό που δημιούργησε ο εργοδότης
+4. Το backend αντιστοιχίζει `messenger_user_id` ↔ `employee_record`
+5. Επιβεβαίωση: "Καλωσόρισες, [Όνομα]! Μπορείς τώρα να χτυπήσεις κάρτα."
+
+**Postconditions**: To messenger ID του εργαζομένου συνδέεται με τον πίνακα employees
+
+**Edge Cases**:
+- Λάθος κωδικός → "Ο κωδικός δεν αντιστοιχεί σε καμία επιχείρηση"
+- Ήδη linked → "Είστε ήδη εγγεγραμμένος"
+- Εργαζόμενος σε 2 εργοδότες → multi-employer selection
+
+---
+
+#### UC-03: Check-in (Έναρξη Βάρδιας) — **Core Flow**
+
+```mermaid
+sequenceDiagram
+    actor Employee as Εργαζόμενος
+    participant Messenger as Viber/Telegram/WhatsApp
+    participant WH as Webhook Gateway
+    participant Queue as Message Broker (Kafka)
+    participant BLE as Business Logic Engine
+    participant EAPI as ERGANI API Client
+    participant ERGANI as ΕΡΓΑΝΗ ΙΙ API
+    participant DB as Database
+
+    Employee->>Messenger: Πατάει "ΕΝΑΡΞΗ ΒΑΡΔΙΑΣ"
+    Messenger->>WH: HTTP POST (webhook payload)
+    WH->>WH: Verify signature
+    WH->>Queue: Enqueue message
+    WH-->>Messenger: HTTP 200 OK (< 250ms)
+    
+    Queue->>BLE: Dequeue message
+    BLE->>DB: Lookup employee by messenger_id
+    BLE->>DB: Get employer settings (GPS, radius)
+    BLE->>BLE: Haversine distance calculation
+    
+    alt GPS OK (distance < radius)
+        BLE->>BLE: Build WRKCardSE JSON payload
+        BLE->>EAPI: Submit check-in
+        EAPI->>EAPI: Check JWT validity
+        alt JWT expired
+            EAPI->>ERGANI: POST /authenticate (Branch User credentials)
+            ERGANI-->>EAPI: New JWT
+        end
+        EAPI->>ERGANI: POST /Documents/WRKCardSE
+        ERGANI-->>EAPI: HTTP 200 OK
+        EAPI->>DB: Save audit record (success)
+        EAPI->>Messenger: "Η βάρδια ξεκίνησε στις 08:02"
+    else GPS FAIL (distance > radius)
+        BLE->>DB: Log rejection
+        BLE->>Messenger: "Δεν βρίσκεστε κοντά στο κατάστημα (απόσταση: 350m)"
+    else Low accuracy (horizontal_accuracy > 100m)
+        BLE->>Messenger: "Αδυναμία εντοπισμού. Ανοίξτε GPS και δοκιμάστε ξανά."
+    end
+```
+
+**Actors**: Εργαζόμενος
+**Preconditions**: Linked account, εντός ωρών λειτουργίας
+
+**Βήματα**:
+1. Ο εργαζόμενος πατάει "ΕΝΑΡΞΗ" στο chatbot keyboard
+2. Το chatbot εμφανίζει location-picker (platform-specific button)
+3. Ο εργαζόμενος εγκρίνει κοινοποίηση GPS στο OS prompt
+4. Webhook λαμβάνει lat/lng (+ horizontal_accuracy αν διαθέσιμο)
+5. Verify cryptographic signature του webhook payload
+6. Enqueue στο Message Broker → HTTP 200 OK (<250ms)
+7. Worker: lookup employee → get employer's geofence params
+8. **Accuracy check**: αν `horizontal_accuracy > max_accuracy_threshold` (100m) → reject
+9. **Haversine distance**: αν `distance > geofence_radius` → reject
+10. Build JSON payload:
+    ```json
+    {
+      "Cards": {
+        "Card": [{
+          "f_afm_ergodoti": "123456789",
+          "f_aa": "0",
+          "f_comments": "Submitted via Viber Bot API",
+          "CardDetails": [{
+            "f_afm": "987654321",
+            "f_eponymo": "ΠΑΠΑΔΟΠΟΥΛΟΣ",
+            "f_onoma": "ΓΕΩΡΓΙΟΣ",
+            "f_type": 0,
+            "f_reference_date": "2026-02-26",
+            "f_date": "2026-02-26T08:02:15.1234567+02:00",
+            "f_aitiologia": null
+          }]
+        }]
+      }
+    }
+    ```
+11. ERGANI API Client: check JWT → POST `/Documents/WRKCardSE`
+12. Parse response (200 OK / 400 Bad Request)
+13. Save audit log
+14. Send confirmation/error message back to chatbot
+
+**Edge Cases**:
+- **ΕΡΓΑΝΗ down**: Μήνυμα αποθηκεύεται στο queue, retry με exponential backoff. Notification στον εργαζόμενο: "Η κάρτα σας καταγράφηκε. Αναμονή επιβεβαίωσης ΕΡΓΑΝΗ."
+- **Διπλό check-in**: Idempotency check — αν υπάρχει ήδη check-in σήμερα χωρίς check-out → "Έχετε ήδη δηλώσει έναρξη σήμερα"
+- **Night shift (μεσάνυχτα)**: `f_reference_date` = η ημερομηνία **έναρξης** της βάρδιας, ακόμα κι αν η λήξη είναι στην επόμενη ημέρα
+- **GPS Spoofing**: Logging suspicious patterns (ίδιες ακριβώς συντεταγμένες κάθε φορά, ή accuracy πάντα 0)
+- **Webhook retry** (WhatsApp): Idempotency via `message.id` — αν ήδη processed → skip
+
+---
+
+#### UC-04: Check-out (Λήξη Βάρδιας)
+
+Ίδια ροή με UC-03 εκτός:
+- Κουμπί: "ΛΗΞΗ ΒΑΡΔΙΑΣ"
+- Validation: πρέπει να υπάρχει ανοιχτό check-in σήμερα
+- Geofencing: configurable — μπορεί να είναι πιο "χαλαρό" ή disabled, ανάλογα με τις ανάγκες
+
+---
+
+#### UC-05: Proactive Reminders (Υπενθύμιση Check-out)
+
+**Flow**:
+1. CRON job ελέγχει κάθε 5 λεπτά
+2. Βρίσκει εργαζόμενους με ανοιχτό check-in και δηλωμένο ωράριο που λήγει σε 5-10 λεπτά
+3. Στέλνει push notification: "Η βάρδια σας ολοκληρώνεται σε 5'. Μην ξεχάσετε να δηλώσετε αποχώρηση."
+4. Αν δεν γίνει check-out μέσα σε 30' μετά τη λήξη → alert στον εργοδότη
+
+> [!WARNING]
+> Τα Chatbot-initiated messages στο Viber χρεώνονται (εκτός session). Στο WhatsApp απαιτούν Template Message αν πέρασαν 24 ώρες. Budget considerations εδώ.
+
+---
+
+#### UC-06: Εξωτερικός Εργαζόμενος (Field Worker)
+
+- Ο εργοδότης mark-άρει τον εργαζόμενο ως `external_worker = true`
+- Geofencing **παρακάμπτεται** — η τοποθεσία καταγράφεται μόνο για audit
+- Η χρονοσήμανση αποστέλλεται κανονικά στο ΕΡΓΑΝΗ
+- Ο εργοδότης βλέπει στο portal report με τις τοποθεσίες
+
+---
+
+#### UC-07: Employer Dashboard (Reporting / Monitoring)
+
+- Real-time view: ποιοι εργαζόμενοι είναι "in" αυτή τη στιγμή
+- History: ημερήσιο/εβδομαδιαίο report ωρών
+- Alerts: αποτυχημένα check-ins, ΕΡΓΑΝΗ errors, GPS anomalies
+- Export: CSV/PDF reports
+- Audit log: πλήρες ιστορικό κάθε API call προς ΕΡΓΑΝΗ
+
+---
+
+#### UC-08: Διαχείριση Σφαλμάτων ΕΡΓΑΝΗ
+
+| Error Code | Αιτία | Ενέργεια |
+|-----------|-------|---------|
+| HTTP 400 | Λάθος ΑΦΜ, λάθος f_type, μη εξουσιοδοτημένος χρήστης | Μετάφραση σε φιλικό μήνυμα → notify εργοδότη |
+| HTTP 401 | Expired JWT | Auto-refresh, retry |
+| HTTP 500/503 | ΕΡΓΑΝΗ down | Queue retry, exponential backoff, notify employee "Αναμονή..." |
+| Timeout | Network issue | Retry 3 φορές → Dead Letter Queue → manual resolution |
+
+---
+
+### 2. Αρχιτεκτονική Συστήματος
+
+#### 2.1 High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph "Messenger Platforms"
+        V[Viber Bot]
+        T[Telegram Bot]
+        W[WhatsApp Cloud API]
+    end
+
+    subgraph "Edge Layer"
+        APIGW[API Gateway / Load Balancer<br/>nginx / AWS ALB]
+    end
+
+    subgraph "Application Layer"
+        WH[Webhook Gateway<br/>Node.js + Fastify]
+        MB[Message Broker<br/>Apache Kafka / RabbitMQ]
+        BLE[Business Logic Engine<br/>Worker Nodes - Node.js]
+        CRON[Scheduled Jobs<br/>Reminders, Sync, Cleanup]
+    end
+
+    subgraph "Integration Layer"
+        EAPI[ERGANI API Client<br/>JWT Auth + REST]
+        ERGANI[(ΕΡΓΑΝΗ ΙΙ API<br/>eservices.yeka.gr)]
+    end
+
+    subgraph "Data Layer"
+        PG[(PostgreSQL<br/>Primary DB)]
+        REDIS[(Redis<br/>Cache + Sessions)]
+        S3[(Object Storage<br/>Audit Logs, Exports)]
+    end
+
+    subgraph "Employer Interface"
+        PORTAL[Web Portal<br/>Next.js / React]
+    end
+
+    V --> APIGW
+    T --> APIGW
+    W --> APIGW
+    APIGW --> WH
+    WH --> MB
+    MB --> BLE
+    BLE --> EAPI
+    EAPI --> ERGANI
+    BLE --> PG
+    BLE --> REDIS
+    EAPI --> PG
+    CRON --> PG
+    CRON --> BLE
+    PORTAL --> PG
+    PORTAL --> REDIS
+    BLE --> S3
+```
+
+#### 2.2 Στοίβα Τεχνολογίας (Production Stack)
+
+| Layer | Technology | Justification |
+|-------|-----------|---------------|
+| **Webhook Gateway** | Node.js + Fastify | Ultra-fast JSON parsing, <50ms response |
+| **Message Broker** | Apache Kafka | Durability, replay, partitioning by employer |
+| **Business Logic** | Node.js Workers | Event-driven, async/await, shared codebase |
+| **ERGANI Client** | Dedicated Node.js service | Token caching, retry logic isolation |
+| **Primary DB** | PostgreSQL 16 | JSONB for audit logs, strong typing, battle-tested |
+| **Cache** | Redis 7 | JWT caching, rate limiting, session storage |
+| **Employer Portal** | Next.js 15 (React) | SSR for SEO, API routes, auth built-in |
+| **Infrastructure** | Docker + K8s on AWS/GCP | Auto-scaling, health checks, zero-downtime deploys |
+| **Monitoring** | Grafana + Prometheus | Real-time dashboards, alerting |
+| **Logging** | ELK Stack (Elastic) | Centralized logging, audit trail |
+| **Secrets** | HashiCorp Vault / AWS KMS | Encryption at rest for ERGANI credentials |
+
+#### 2.3 Database Schema (PostgreSQL)
+
+```sql
+-- Εργοδότες
+CREATE TABLE employers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) NOT NULL UNIQUE,
+    company_name VARCHAR(255) NOT NULL,
+    afm_ergodoti CHAR(9) NOT NULL UNIQUE,  -- f_afm_ergodoti
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    subscription_plan VARCHAR(50) DEFAULT 'basic',
+    is_active BOOLEAN DEFAULT true
+);
+
+-- Παραρτήματα (Branches)
+CREATE TABLE branches (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employer_id UUID REFERENCES employers(id),
+    branch_number VARCHAR(10) NOT NULL,     -- f_aa
+    name VARCHAR(255),
+    latitude DECIMAL(10, 8) NOT NULL,
+    longitude DECIMAL(11, 8) NOT NULL,
+    geofence_radius_meters INT DEFAULT 40,  -- configurable
+    max_accuracy_meters INT DEFAULT 100,
+    ergani_username_encrypted BYTEA,         -- AES-256
+    ergani_password_encrypted BYTEA,         -- AES-256
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(employer_id, branch_number)
+);
+
+-- Εργαζόμενοι
+CREATE TABLE employees (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employer_id UUID REFERENCES employers(id),
+    branch_id UUID REFERENCES branches(id),
+    afm CHAR(9) NOT NULL,                    -- f_afm
+    eponymo VARCHAR(255) NOT NULL,           -- f_eponymo (ΚΕΦΑΛΑΙΑ)
+    onoma VARCHAR(255) NOT NULL,             -- f_onoma  (ΚΕΦΑΛΑΙΑ)
+    phone VARCHAR(20),
+    is_external_worker BOOLEAN DEFAULT false,
+    linking_code CHAR(6),                    -- one-time code
+    linking_code_expires_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT true,
+    UNIQUE(employer_id, afm)
+);
+
+-- Σύνδεση Messenger → Employee
+CREATE TABLE messenger_links (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employee_id UUID REFERENCES employees(id),
+    platform VARCHAR(20) NOT NULL,           -- 'viber', 'telegram', 'whatsapp'
+    platform_user_id VARCHAR(255) NOT NULL,  -- Viber sender.id, Telegram chat.id, WhatsApp phone
+    linked_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(platform, platform_user_id)
+);
+
+-- Χρονοσημάνσεις
+CREATE TABLE time_stamps (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employee_id UUID REFERENCES employees(id),
+    branch_id UUID REFERENCES branches(id),
+    action_type VARCHAR(10) NOT NULL,        -- 'check_in' / 'check_out'
+    event_timestamp TIMESTAMPTZ NOT NULL,    -- f_date (η στιγμή)
+    reference_date DATE NOT NULL,            -- f_reference_date
+    latitude DECIMAL(10, 8),                 -- μόνο για audit, διαγράφεται μετά
+    longitude DECIMAL(11, 8),
+    horizontal_accuracy DECIMAL(8, 2),
+    distance_meters DECIMAL(8, 2),
+    geofence_status VARCHAR(20),             -- 'approved', 'rejected', 'bypassed'
+    platform VARCHAR(20),                    -- viber/telegram/whatsapp
+    ergani_status VARCHAR(20) DEFAULT 'pending', -- 'pending','submitted','confirmed','failed'
+    ergani_response JSONB,
+    ergani_submitted_at TIMESTAMPTZ,
+    retry_count INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Audit Log (immutable)
+CREATE TABLE audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    event_type VARCHAR(50) NOT NULL,
+    entity_type VARCHAR(50) NOT NULL,
+    entity_id UUID,
+    payload JSONB NOT NULL,
+    response JSONB,
+    http_status INT,
+    ip_address INET,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Idempotency (για webhook retries)
+CREATE TABLE processed_messages (
+    message_id VARCHAR(255) PRIMARY KEY,
+    platform VARCHAR(20) NOT NULL,
+    processed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- JWT Token Cache (εναλλακτικά στο Redis)
+CREATE TABLE jwt_cache (
+    branch_id UUID REFERENCES branches(id) PRIMARY KEY,
+    access_token TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_timestamps_employee_date ON time_stamps(employee_id, reference_date);
+CREATE INDEX idx_timestamps_status ON time_stamps(ergani_status) WHERE ergani_status = 'pending';
+CREATE INDEX idx_messenger_lookup ON messenger_links(platform, platform_user_id);
+CREATE INDEX idx_employees_linking ON employees(linking_code) WHERE linking_code IS NOT NULL;
+CREATE INDEX idx_audit_entity ON audit_log(entity_type, entity_id);
+```
+
+#### 2.4 Διάγραμμα Modules / Microservices
+
+```
+ergani-saas/
+├── services/
+│   ├── webhook-gateway/        # Fastify HTTP server
+│   │   ├── routes/
+│   │   │   ├── viber.js        # POST /webhooks/viber
+│   │   │   ├── telegram.js     # POST /webhooks/telegram
+│   │   │   └── whatsapp.js     # POST /webhooks/whatsapp
+│   │   ├── middleware/
+│   │   │   ├── signature-verify.js   # HMAC verification per platform
+│   │   │   └── idempotency.js        # Duplicate message filter
+│   │   └── index.js
+│   │
+│   ├── message-processor/      # Kafka consumer / worker
+│   │   ├── handlers/
+│   │   │   ├── check-in.handler.js
+│   │   │   ├── check-out.handler.js
+│   │   │   ├── registration.handler.js
+│   │   │   └── unknown.handler.js
+│   │   ├── geofencing/
+│   │   │   ├── haversine.js    # Distance calculation
+│   │   │   └── validator.js    # Accuracy + radius check
+│   │   └── index.js
+│   │
+│   ├── ergani-client/          # ERGANI II API integration
+│   │   ├── auth.js             # JWT token management
+│   │   ├── work-card.js        # WRKCardSE submission
+│   │   ├── payload-builder.js  # JSON payload construction
+│   │   └── error-mapper.js     # HTTP error → user message
+│   │
+│   ├── notification-service/   # Outbound messages
+│   │   ├── viber-sender.js
+│   │   ├── telegram-sender.js
+│   │   ├── whatsapp-sender.js
+│   │   └── template-engine.js  # Multilingual message templates
+│   │
+│   ├── scheduler/              # CRON jobs
+│   │   ├── checkout-reminder.js
+│   │   ├── pending-retry.js    # Retry failed ERGANI submissions
+│   │   ├── gps-cleanup.js      # GDPR: delete GPS data after X hours
+│   │   └── jwt-refresh.js      # Proactive JWT refresh
+│   │
+│   └── employer-portal/        # Next.js web app
+│       ├── pages/
+│       ├── components/
+│       └── api/                # API routes for portal
+│
+├── shared/                     # Shared libraries
+│   ├── db/                     # Prisma/Knex models
+│   ├── encryption/             # AES-256 encrypt/decrypt
+│   ├── logger/                 # Structured logging
+│   └── config/                 # Environment config
+│
+├── infrastructure/
+│   ├── docker-compose.yml
+│   ├── Dockerfile.*
+│   ├── k8s/                    # Kubernetes manifests
+│   └── terraform/              # Infrastructure as Code
+│
+└── tests/
+    ├── unit/
+    ├── integration/
+    └── e2e/
+```
+
+---
+
+### 3. Ασφάλεια — Κρίσιμα Σημεία
+
+| Concern | Implementation |
+|---------|---------------|
+| **ERGANI Credentials** | AES-256-GCM encryption at rest, HashiCorp Vault in production |
+| **Webhook Verification** | HMAC-SHA256 (Viber), Bot Token hash (Telegram), SHA256 (WhatsApp) |
+| **JWT Management** | Redis cache with TTL, proactive refresh 5min πριν τη λήξη |
+| **GPS Data (GDPR)** | Αυτόματη διαγραφή lat/lng μετά 24-48 ώρες, κρατάμε μόνο approved/rejected |
+| **Idempotency** | `processed_messages` table — αποτρέπει duplicate submissions |
+| **Rate Limiting** | Redis-based per-employer rate limiting |
+| **Data Minimization** | Δεν αποθηκεύουμε GPS μακροπρόθεσμα — μόνο distance & status |
+| **TLS** | HTTPS everywhere, TLS 1.3 |
+| **Authentication** | Portal: bcrypt + JWT + refresh tokens |
+
+---
+
+## ΜΕΡΟΣ Β: TESTING STRATEGY — ΑΝΑΛΥΤΙΚΗ
+
+---
+
+### 4. Πυραμίδα Testing
+
+```
+            ┌───────────┐
+            │  E2E Tests │ ← Real messenger + Sandbox ERGANI
+            │  (10-15)   │
+           ┌┴───────────┴┐
+           │ Integration  │ ← Service-to-service, DB, Redis, Kafka
+           │ Tests (40+)  │
+          ┌┴─────────────┴┐
+          │  Unit Tests    │ ← Pure logic: Haversine, payload builder, validators
+          │   (100+)       │
+          └────────────────┘
+```
+
+---
+
+### 5. Unit Tests — Τι Ακριβώς Τεστάρεται
+
+#### 5.1 Geofencing Module (`geofencing/haversine.js`)
+
+| Test Case | Input | Expected |
+|-----------|-------|----------|
+| Ίδιο σημείο | A=(37.9838, 23.7275), B=(37.9838, 23.7275) | distance = 0m |
+| Εντός ακτίνας | A=office, B=30m μακριά | `approved` |
+| Εκτός ακτίνας | A=office, B=500m μακριά | `rejected` |
+| Ακριβώς στο όριο | A=office, B=exact radius | `approved` (inclusive) |
+| Αντίποδες | Αθήνα → Sydney | ~16,000km |
+| Μεγάλο accuracy | accuracy=1500m | `low_accuracy` rejection |
+| Accuracy στο όριο | accuracy=100m (threshold) | `approved` |
+| Zero coordinates | (0,0) → check | Flagged as suspicious |
+
+**Framework**: Jest
+**Εκτέλεση**: `npm run test:unit -- --testPathPattern=haversine`
+
+#### 5.2 Payload Builder (`ergani-client/payload-builder.js`)
+
+| Test Case | Notes |
+|-----------|-------|
+| Valid check-in payload | All fields correct, f_type=0 |
+| f_date timezone (EET +02:00) | Winter time offset |
+| f_date timezone (EEST +03:00) | Summer time offset |
+| Night shift reference_date | Check-out after midnight → reference_date = previous day |
+| Greek characters in names | ΠΑΠΑΔΟΠΟΥΛΟΣ, ΓΕΩΡΓΙΟΣ |
+| Missing optional fields | f_aitiologia = null, f_comments = default |
+| Multiple CardDetails | Bulk submission |
+| Αριθμός ΑΦΜ validation | 9 digits, numeric only |
+
+**Εκτέλεση**: `npm run test:unit -- --testPathPattern=payload-builder`
+
+#### 5.3 Webhook Signature Verification
+
+| Test Case | Platform | Notes |
+|-----------|----------|-------|
+| Valid Viber signature | Viber | HMAC-SHA256 with auth token |
+| Invalid Viber signature | Viber | → 403 Forbidden |
+| Valid Telegram secret_token | Telegram | Header: X-Telegram-Bot-Api-Secret-Token |
+| Invalid Telegram token | Telegram | → 403 |
+| Valid WhatsApp signature | WhatsApp | SHA256 HMAC with app secret |
+| Missing header | All | → 403 |
+| Replay attack (old timestamp) | All | → reject if timestamp > 5min old |
+
+**Εκτέλεση**: `npm run test:unit -- --testPathPattern=signature`
+
+#### 5.4 Error Mapper (`ergani-client/error-mapper.js`)
+
+| ERGANI Response | User Message (EL) |
+|----------------|-------------------|
+| `{"message": "Service Code is not authenticated"}` | "Σφάλμα σύνδεσης. Ειδοποιήθηκε ο εργοδότης." |
+| HTTP 400 invalid f_afm | "Ελέγξτε τα στοιχεία σας στο portal." |
+| HTTP 401 expired token | (Αυτόματο retry — ο χρήστης δεν βλέπει τίποτα) |
+| HTTP 500 | "Το ΕΡΓΑΝΗ δεν ανταποκρίνεται. Η κάρτα σας θα υποβληθεί αυτόματα." |
+
+#### 5.5 Idempotency Check
+
+| Test Case | Notes |
+|-----------|-------|
+| Νέο message_id | Process normally |
+| Ήδη processed message_id | Skip, return 200 |
+| Race condition | 2 concurrent identical messages → only 1 processed |
+
+---
+
+### 6. Integration Tests — Service Boundaries
+
+#### 6.1 Webhook Gateway → Kafka
+
+**Τι τεστάρουμε**: Τα webhook endpoints δεχόνται valid payloads, τα σπρώχνουν στο Kafka, και επιστρέφουν 200 OK σε < 250ms.
+
+```
+Setup: Docker Compose (Kafka + Webhook Gateway)
+1. POST /webhooks/viber with valid location payload → 200 OK
+2. Verify message appears in Kafka topic "incoming-messages"
+3. Measure response time < 250ms
+4. POST with bad signature → 403 Forbidden
+5. POST malformed JSON → 400 Bad Request
+```
+
+**Εκτέλεση**: `npm run test:integration -- --testPathPattern=webhook`
+
+#### 6.2 Business Logic Engine → PostgreSQL
+
+```
+1. Insert employee + branch → lookup by messenger_id
+2. Insert check-in → verify geofence calculation stored
+3. Check duplicate check-in prevention
+4. Verify GDPR cleanup job deletes GPS after 48h
+```
+
+**Εκτέλεση**: `npm run test:integration -- --testPathPattern=business-logic`
+
+#### 6.3 ERGANI API Client → Sandbox
+
+> [!IMPORTANT]
+> Αυτά τρέχουν **μόνο** κατά του ΕΡΓΑΝΗ Sandbox (`trialv2eservices.yeka.gr`), **ποτέ** κατά production.
+
+```
+Setup: Sandbox Branch User credentials σε .env.test
+
+1. Authentication:
+   POST to sandbox auth endpoint with valid credentials → receive JWT
+   POST with wrong password → 401
+   Use expired JWT → 401 → auto-refresh → retry → success
+
+2. WRKCardSE Submission:
+   Submit valid check-in → 200 OK
+   Submit with invalid f_afm → 400 Bad Request
+   Submit with future date → 400
+   Submit with missing required fields → 400
+   Submit duplicate check-in → verify response behavior
+
+3. Error Handling:
+   Simulate timeout (mock) → retry logic kicks in
+   Simulate 500 error → exponential backoff
+   Dead Letter Queue population after max retries
+```
+
+**Εκτέλεση**: `ERGANI_ENV=sandbox npm run test:integration -- --testPathPattern=ergani`
+
+#### 6.4 Notification Service → Messenger APIs
+
+```
+1. Send Viber keyboard with location-picker → verify JSON structure
+2. Send Telegram ReplyKeyboardMarkup with request_location → verify
+3. Send WhatsApp interactive location_request_message → verify
+4. Send text confirmation message per platform → verify delivery
+```
+
+**Εκτέλεση**: `npm run test:integration -- --testPathPattern=notification`
+
+---
+
+### 7. End-to-End (E2E) Tests
+
+> [!CAUTION]
+> Τα E2E tests απαιτούν **πραγματικούς** messenger bots και πρόσβαση στο ΕΡΓΑΝΗ Sandbox.
+
+#### 7.1 Full Happy Path (Telegram — πιο εύκολο στο setup)
+
+```
+Preconditions:
+- Telegram test bot running
+- ΕΡΓΑΝΗ Sandbox credentials configured
+- Test employer + employee + branch in DB
+
+Steps:
+1. Ο tester στέλνει /start στο Telegram bot
+2. Εισάγει linking code → "Καλωσόρισες, Τεστ Εργαζόμενος"
+3. Πατάει "ΕΝΑΡΞΗ ΒΑΡΔΙΑΣ"
+4. Στέλνει GPS location (within geofence)
+5. Λαμβάνει: "Η βάρδια ξεκίνησε στις HH:MM"
+6. Verify: εγγραφή στο DB → ergani_status = 'confirmed'
+7. Verify: audit_log entry with ERGANI response
+8. Πατάει "ΛΗΞΗ ΒΑΡΔΙΑΣ"
+9. Στέλνει GPS → "Η βάρδια ολοκληρώθηκε"
+10. Portal: verify ο εργοδότης βλέπει τη σημερινή εγγραφή
+```
+
+#### 7.2 Failure Scenarios E2E
+
+| Scenario | Expected |
+|----------|----------|
+| GPS out of range | Error message, log entry, no ΕΡΓΑΝΗ call |
+| ΕΡΓΑΝΗ Sandbox down (simulate) | "Αναμονή..." → retry → eventual "confirmed" |
+| Unlinked user sends location | "Δεν είστε εγγεγραμμένος. Πατήστε ΕΓΓΡΑΦΗ." |
+| Double check-in | "Έχετε ήδη δηλώσει έναρξη σήμερα" |
+
+---
+
+### 8. Performance & Load Testing
+
+**Εργαλεία**: k6 / Artillery
+
+#### 8.1 Webhook Gateway Throughput
+
+```
+Σενάριο: 1000 concurrent webhook requests
+Target: p99 < 200ms, 0 dropped requests
+Tool: k6 scripted test
+
+k6 run --vus=100 --duration=60s tests/load/webhook-load.js
+```
+
+#### 8.2 Peak Hour Simulation
+
+```
+Σενάριο: 08:00 πρωί — 500 εργαζόμενοι check-in ταυτόχρονα
+Μετρικές:
+- Kafka consumer lag < 100 messages
+- ERGANI API calls completed within 30s
+- Zero missed check-ins
+```
+
+---
+
+### 9. Security Testing
+
+| Test | Method | Tool |
+|------|--------|------|
+| SQL Injection | Parameterized queries verification | sqlmap |
+| XSS στο Portal | Payload injection in forms | OWASP ZAP |
+| Webhook spoofing | Fake signatures | Custom script |
+| GPS Spoofing patterns | Impossible travel detection | Unit tests |
+| Credential exposure | Secrets in logs/responses | grep + audit |
+| HTTPS enforcement | Certificate validation | SSL Labs |
+| Rate limiting | Brute force login | Custom k6 script |
+
+---
+
+### 10. GDPR Compliance Tests
+
+| Test | Expected behavior |
+|------|-------------------|
+| GPS data after 48h | `latitude` & `longitude` → NULL |
+| Employee data deletion request | Full anonymization of employee records |
+| Audit log retention | Immutable, but anonymizable |
+| Consent tracking | Every location share has explicit OS-level consent |
+| Data export request | Employee can request full data export via portal |
+
+---
+
+## ΜΕΡΟΣ Γ: ΒΗΜΑ-ΠΡΟΣ-ΒΗΜΑ ΥΛΟΠΟΙΗΣΗ
+
+---
+
+### Φάση 1: Foundation & Core Backend (Εβδομάδες 1-3)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 1.1 | Provisioning: Docker Compose (PostgreSQL, Redis, Kafka, Zookeeper) | `docker-compose.yml` |
+| 1.2 | Database schema migration (Prisma / Knex) | `migrations/001_initial.sql` |
+| 1.3 | Shared libraries: encryption, logger, config | `shared/` |
+| 1.4 | Haversine algorithm + unit tests | `geofencing/haversine.js` + 8 tests |
+| 1.5 | Geofence validator (accuracy check) | `geofencing/validator.js` + 5 tests |
+| 1.6 | Webhook Gateway scaffold (Fastify) | Health check endpoint |
+| 1.7 | Webhook signature verification per platform | Middleware + 6 tests |
+| 1.8 | Kafka producer (webhook → queue) | Integration test |
+| 1.9 | Kafka consumer (worker scaffold) | Connection test |
+| 1.10 | CI pipeline setup (GitHub Actions) | `.github/workflows/ci.yml` |
+
+**Checkpoint 1**: Webhook receives request → enqueues in Kafka → worker picks up → calculates Haversine distance. All tests pass.
+
+---
+
+### Φάση 2: ΕΡΓΑΝΗ ΙΙ Integration (Εβδομάδες 3-5)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 2.1 | ERGANI JWT auth module | `ergani-client/auth.js` + tests |
+| 2.2 | Token caching (Redis) with proactive refresh | Auto-refresh 5min πριν expire |
+| 2.3 | WRKCardSE payload builder | `payload-builder.js` + 8 tests |
+| 2.4 | Timezone handling (EET/EEST) | Unit tests for winter/summer |
+| 2.5 | ERGANI REST client (submit check-in/out) | `work-card.js` |
+| 2.6 | Error mapper (ERGANI codes → user messages) | `error-mapper.js` + tests |
+| 2.7 | Retry logic with exponential backoff | Dead Letter Queue handling |
+| 2.8 | Sandbox integration tests | Full cycle tests |
+| 2.9 | Audit log system | Every API call logged |
+| 2.10 | Idempotency layer | `processed_messages` table |
+
+**Checkpoint 2**: Submit a check-in to Sandbox → get 200 OK → log in DB. Submit bad data → get meaningful error.
+
+---
+
+### Φάση 3: Messenger Bot Integration (Εβδομάδες 5-7)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 3.1 | Telegram Bot setup (BotFather) | Bot token, basic /start command |
+| 3.2 | Telegram webhook handler | Location receipt + processing |
+| 3.3 | Telegram ReplyKeyboardMarkup | Location-picker button |
+| 3.4 | Viber Bot setup (Commercial process) | Bot registered |
+| 3.5 | Viber webhook handler | Signature verify + location parsing |
+| 3.6 | Viber Keyboard (location-picker ActionType) | Custom keyboard JSON |
+| 3.7 | WhatsApp Cloud API setup | Meta Business verification |
+| 3.8 | WhatsApp webhook handler | Location receipt |
+| 3.9 | WhatsApp interactive location_request_message | Interactive message sending |
+| 3.10 | Notification service (outbound messages) | Multi-platform message sending |
+| 3.11 | Employee linking flow (/start + code) | Full registration flow |
+| 3.12 | Conversation state management | Redis-based state machine |
+
+**Checkpoint 3**: Send location via Telegram → get "Η βάρδια ξεκίνησε" → ΕΡΓΑΝΗ Sandbox confirms.
+
+---
+
+### Φάση 4: Employer Portal (Εβδομάδες 7-9)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 4.1 | Next.js project scaffold | Auth pages (login/register) |
+| 4.2 | Employer authentication (NextAuth.js) | JWT + session |
+| 4.3 | Dashboard: real-time employee status | Live check-in/out view |
+| 4.4 | Branch management CRUD | GPS picker, geofence config |
+| 4.5 | Employee management CRUD | Add/edit employees, generate links |
+| 4.6 | ERGANI credentials form | AES-256 encryption on save |
+| 4.7 | Reporting: daily/weekly hours | Charted reports |
+| 4.8 | Audit log viewer | Searchable, filterable log |
+| 4.9 | Export (CSV/PDF) | Downloadable reports |
+| 4.10 | Responsive design (mobile-first) | Works on employer's phone too |
+
+**Checkpoint 4**: Employer logs in → sees live dashboard → adds employees → views reports.
+
+---
+
+### Φάση 5: Scheduled Jobs & Automations (Εβδομάδες 9-10)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 5.1 | Check-out reminder CRON | 5min before shift end |
+| 5.2 | Pending submission retry job | Retry failed ERGANI calls |
+| 5.3 | GPS data cleanup (GDPR) | Delete coords after 48h |
+| 5.4 | JWT proactive refresh | Avoid 401 during peak |
+| 5.5 | Employer no-checkout alerts | Email/notification to employer |
+
+---
+
+### Φάση 6: Security Hardening & Performance (Εβδομάδες 10-11)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 6.1 | Rate limiting (Redis) | Per-employer, per-IP |
+| 6.2 | Input sanitization | All user inputs |
+| 6.3 | CORS configuration | Portal-only access |
+| 6.4 | Helmet.js (security headers) | XSS, clickjacking protection |
+| 6.5 | Load testing (k6) | 1000 concurrent users |
+| 6.6 | OWASP ZAP scan | Vulnerability report |
+| 6.7 | Secrets audit | No secrets in logs/code |
+| 6.8 | SSL/TLS verification | TLS 1.3, cert pinning |
+
+---
+
+### Φάση 7: Pilot & Go-Live (Εβδομάδες 11-13)
+
+| # | Βήμα | Deliverable |
+|---|------|-------------|
+| 7.1 | Kubernetes deployment manifests | HPA, PDB, health checks |
+| 7.2 | CI/CD pipeline (prod) | Auto-deploy on main merge |
+| 7.3 | Monitoring dashboards (Grafana) | Latency, errors, queue lag |
+| 7.4 | Alerting rules | PagerDuty/Slack for failures |
+| 7.5 | Pilot: 3-5 real businesses | Real-world validation |
+| 7.6 | Stress test during 08:00 peak | All check-ins processed |
+| 7.7 | Documentation | API docs, user guide |
+| 7.8 | Go-Live | Production deployment |
+
+---
+
+## ΜΕΡΟΣ Δ: ΣΗΜΕΙΑ ΙΔΙΑΙΤΕΡΗΣ ΠΡΟΣΟΧΗΣ
+
+> [!CAUTION]
+> ### 1. Timezone Handling
+> Η μορφή `f_date` πρέπει να είναι `2026-02-26T08:58:37.4578278+02:00` (EET) ή `+03:00` (EEST). Λάθος offset = λάθος ώρα στο ΕΡΓΑΝΗ = πρόστιμο. Χρήση `luxon` ή `date-fns-tz` — **ποτέ** raw `Date`.
+
+> [!CAUTION]
+> ### 2. Night Shift Reference Date
+> Check-out στις 02:00 τα ξημερώματα → `f_reference_date` = **χτες** (η ημερομηνία έναρξης βάρδιας). Αν το πάρουμε λάθος, το ΕΡΓΑΝΗ θα δημιουργήσει δύο ξεχωριστές εγγραφές.
+
+> [!CAUTION]
+> ### 3. Ακριβής Ταύτιση Ονομάτων
+> `f_eponymo` και `f_onoma` πρέπει να ταυτίζονται **ακριβώς** με το μητρώο ΕΡΓΑΝΗ. Αν ο εργοδότης γράψει "ΓΙΩΡΓΟΣ" αλλά στο ΕΡΓΑΝΗ είναι "ΓΕΩΡΓΙΟΣ" → ασυμφωνία.
+
+> [!WARNING]
+> ### 4. Viber Commercial Terms
+> Από 5/2/2024, τα Viber Bots δεν είναι δωρεάν. Απαιτείται commercial agreement. Chatbot-initiated messages χρεώνονται — session messages (user-initiated) είναι δωρεάν.
+
+> [!WARNING]
+> ### 5. WhatsApp 24-Hour Window
+> Εκτός 24ωρου → μόνο Template Messages (χρεώνονται). Τα reminders πρέπει να σταλούν ως pre-approved templates.
+
+> [!IMPORTANT]
+> ### 6. ΕΡΓΑΝΗ Downtime
+> Το κρατικό API μπορεί να πέσει ανά πάσα στιγμή (maintenance, upgrades). Τα check-ins πρέπει **πάντα** να αποθηκεύονται τοπικά και να αποστέλλονται ασύγχρονα. Ο εργαζόμενος πρέπει να ξέρει: "Η κάρτα καταγράφηκε, αναμονή επιβεβαίωσης."
+
+> [!IMPORTANT]
+> ### 7. Duplicate Submission Prevention
+> WhatsApp webhook retries (exponential backoff up to 7 days). Χωρίς idempotency → διπλό check-in → blocked work card → πρόστιμο.
+
+---
+
+## ΜΕΡΟΣ Ε: ΕΞΥΠΝΕΣ ΛΕΙΤΟΥΡΓΙΕΣ & ΕΙΔΟΠΟΙΗΣΕΙΣ ΕΡΓΟΔΟΤΗ
+
+---
+
+### 11. Σύστημα Ειδοποιήσεων Εργοδότη (Boss Alert System)
+
+#### 11.1 Real-Time Push Notifications στον Εργοδότη
+
+| Trigger | Ειδοποίηση | Κανάλι | Urgency |
+|---------|-----------|--------|---------|
+| Εργαζόμενος check-in | "Ο Γιώργος ξεκίνησε στις 08:02" | Portal + Email digest | Low |
+| Εργαζόμενος **δεν** έκανε check-in ενώ έπρεπε (15' καθυστέρηση) | "⚠️ Ο Γιώργος δεν έχει δηλώσει έναρξη (προγρ. 08:00)" | Push + SMS | **High** |
+| Check-out χωρίς check-in | "❌ Ο Γιώργος δήλωσε λήξη χωρίς έναρξη" | Push | High |
+| Ξεχασμένο check-out (30' μετά λήξη ωραρίου) | "⏰ Ο Γιώργος δεν έχει δηλώσει αποχώρηση (λήξη 16:00)" | Push + SMS | **Critical** |
+| GPS rejection (εκτός ακτίνας) | "📍 Ο Γιώργος απορρίφθηκε — 350m από το κατάστημα" | Push | Medium |
+| Πολλαπλές GPS rejections ίδιου υπαλλήλου (>3 σε 1 ημέρα) | "🚨 Ύποπτη δραστηριότητα: Γιώργος — 4 αποτυχημένες προσπάθειες" | Push + Email | **Critical** |
+| ΕΡΓΑΝΗ API error | "⚠️ Αποτυχία υποβολής κάρτας Γιώργου — αυτόματο retry σε εξέλιξη" | Portal | Medium |
+| ΕΡΓΑΝΗ prolonged downtime (>15min) | "🔴 Το ΕΡΓΑΝΗ δεν ανταποκρίνεται. X κάρτες σε αναμονή." | Email + SMS | **Critical** |
+| Υπερωρία ανίχνευση (check-out > scheduled end + 30min) | "💰 Πιθανή υπερωρία: Γιώργος ακόμα εντός (ωράριο 16:00, τώρα 16:35)" | Push | High |
+| Εβδομαδιαία σύνοψη (Δευτέρα πρωί) | "📊 Εβδομαδιαία αναφορά: 45 check-ins, 2 αποτυχίες, 0 υπερωρίες" | Email | Low |
+| Νέα σύνδεση εργαζομένου | "✅ Ο Γιώργος συνδέθηκε επιτυχώς μέσω Viber" | Portal | Low |
+| Credential expiry (ΕΡΓΑΝΗ password πλησιάζει λήξη) | "🔑 Τα credentials ΕΡΓΑΝΗ λήγουν σε 7 ημέρες" | Email | High |
+| Subscription billing reminder | "💳 Η συνδρομή σας ανανεώνεται σε 3 ημέρες" | Email | Medium |
+
+#### 11.2 Employer Notification Preferences (DB)
+
+```sql
+CREATE TABLE employer_notification_settings (
+    employer_id UUID REFERENCES employers(id) PRIMARY KEY,
+    notify_each_checkin BOOLEAN DEFAULT false,  -- πολύ θόρυβος για μεγάλες εταιρίες
+    notify_late_arrival BOOLEAN DEFAULT true,
+    late_arrival_threshold_min INT DEFAULT 15,
+    notify_missed_checkout BOOLEAN DEFAULT true,
+    missed_checkout_threshold_min INT DEFAULT 30,
+    notify_gps_rejection BOOLEAN DEFAULT true,
+    notify_overtime_risk BOOLEAN DEFAULT true,
+    overtime_threshold_min INT DEFAULT 30,
+    notify_fraud_alerts BOOLEAN DEFAULT true,
+    notify_ergani_errors BOOLEAN DEFAULT true,
+    weekly_summary_enabled BOOLEAN DEFAULT true,
+    weekly_summary_day VARCHAR(10) DEFAULT 'monday',
+    notification_channels JSONB DEFAULT '{"push": true, "email": true, "sms": false}',
+    quiet_hours_start TIME DEFAULT '22:00',
+    quiet_hours_end TIME DEFAULT '07:00',
+    employer_phone VARCHAR(20),  -- για SMS
+    employer_viber_id VARCHAR(255),  -- optional: ειδοποίηση μέσω Viber
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+#### 11.3 Ημερήσιο Dashboard Summary (Auto-generated)
+
+Κάθε βράδυ στις 23:00 → αυτόματο email/push:
+
+```
+📊 Ημερήσια Αναφορά — 26/02/2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ Κανονικές βάρδιες: 3/3
+❌ Χωρίς check-out: 0
+⚠️ Καθυστερημένες αφίξεις: 1 (Γιώργος, +12min)
+📍 GPS απορρίψεις: 0
+💰 Εκτιμώμενη υπερωρία: 0h
+🔗 ΕΡΓΑΝΗ status: Όλα υποβλήθηκαν ✓
+```
+
+---
+
+### 12. Σύστημα Anti-Fraud & GPS Intelligence
+
+#### 12.1 Ανίχνευση GPS Spoofing
+
+| Pattern | Detection Method | Action |
+|---------|-----------------|--------|
+| **Ίδιες ακριβώς συντεταγμένες** κάθε φορά (>5 decimals match) | Statistical analysis | Flag + alert εργοδότη |
+| **horizontal_accuracy = 0** | Τεχνητό GPS (mock apps δίνουν accuracy 0) | Reject + log |
+| **Impossible travel** | 2 check-ins σε 10min, 50km μακριά | Reject + alert |
+| **Altitude anomaly** | GPS altitude δεν ταιριάζει με terrain (αν διαθέσιμο) | Flag |
+| **Timezone mismatch** | Κινητό σε UTC+5 αλλά check-in στην Ελλάδα | Flag |
+| **Consistent micro-pattern** | Πάντα ακριβώς ±0.00001 variation (script) | Flag after 10+ occurrences |
+
+```sql
+CREATE TABLE fraud_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    employee_id UUID REFERENCES employees(id),
+    alert_type VARCHAR(50) NOT NULL,
+    severity VARCHAR(20) NOT NULL,     -- 'low', 'medium', 'high', 'critical'
+    details JSONB NOT NULL,
+    is_reviewed BOOLEAN DEFAULT false,
+    reviewed_by UUID REFERENCES employers(id),
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+#### 12.2 Employee Trust Score (Background)
+
+Αόρατο score (0-100) βάσει ιστορικού:
+- +1 για κάθε κανονικό check-in εντός geofence
+- -10 για GPS rejection
+- -20 για fraud alert
+- -30 για impossible travel
+
+Χρήση: Αν score < 30 → αυτόματο flag στον εργοδότη. **Δεν αποκαλύπτεται** στον εργαζόμενο.
+
+---
+
+### 13. Disaster Recovery & Failover
+
+#### 13.1 Offline Resilience
+
+| Σενάριο | Μέτρο |
+|---------|-------|
+| **Kafka down** | Fallback σε Redis Streams (secondary queue) |
+| **PostgreSQL down** | Read replica promotion, automatic failover |
+| **Redis down** | In-memory JWT cache στους workers |
+| **ΕΡΓΑΝΗ API down** | Persistent queue, retry up to 72h, employer notification |
+| **Ολικό Internet outage** | Local SQLite buffer → batch submit on reconnect |
+| **DNS failure** | Hardcoded fallback IPs for ΕΡΓΑΝΗ endpoints |
+
+#### 13.2 Data Backup Strategy
+
+| Τι | Πού | Πόσο Συχνά | Retention |
+|----|-----|-----------|-----------|
+| PostgreSQL full | S3 encrypted | Daily 03:00 | 30 ημέρες |
+| PostgreSQL WAL | S3 streaming | Continuous | 7 ημέρες |
+| Audit logs | Cold storage (Glacier) | Daily | 5 χρόνια (νομική υποχρέωση) |
+| Redis snapshot | S3 | Every 6h | 7 ημέρες |
+| Kafka topics | S3 | Continuous | 30 ημέρες |
+
+#### 13.3 RTO / RPO Targets
+
+| Metric | Target |
+|--------|--------|
+| **RPO** (max data loss) | < 1 minute (WAL streaming) |
+| **RTO** (max downtime) | < 5 minutes (K8s auto-restart) |
+| **ΕΡΓΑΝΗ submission guarantee** | 100% (queue-based, never lost) |
+
+---
+
+### 14. Πρόσθετες Έξυπνες Λειτουργίες
+
+#### 14.1 Employee Self-Service (μέσω Chatbot)
+
+| Command | Λειτουργία |
+|---------|-----------|
+| "ΚΑΤΑΣΤΑΣΗ" / `/status` | "Σήμερα: Check-in 08:02, ακόμα ενεργός (7h 15min)" |
+| "ΙΣΤΟΡΙΚΟ" / `/history` | Τελευταίες 5 βάρδιες (ημ/νία, ώρες, status) |
+| "ΒΟΗΘΕΙΑ" / `/help` | Οδηγίες χρήσης |
+| "ΑΛΛΑΓΗ ΓΛΩΣΣΑΣ" / `/lang` | EL / EN toggle |
+
+#### 14.2 Smart Shift Detection
+
+- Αν ο εργαζόμενος κάνει check-in στις 06:55 ενώ η βάρδια ξεκινά στις 07:00 → **auto-suggest**: "Θέλετε να ξεκινήσει η βάρδια στις 07:00 ακριβώς;"
+- Αν check-out πολύ νωρίτερα (>2h πριν τη λήξη) → **confirm**: "Σίγουρα θέλετε να κλείσετε τη βάρδια; Λήξη στις 16:00."
+
+#### 14.3 Multi-Branch Auto-Detection
+
+Αν ο εργοδότης έχει 3 καταστήματα, το σύστημα αυτόματα ελέγχει ποιο geofence ταιριάζει (closest match within radius) → δεν χρειάζεται ο υπάλληλος να επιλέξει κατάστημα.
+
+#### 14.4 Αυτόματη Ανίχνευση Θερινής/Χειμερινής Ώρας
+
+Χρήση `Europe/Athens` timezone μέσω `luxon` — αυτόματο switch EET↔EEST. Κανένα hardcoded offset.
+
+#### 14.5 Grace Period Configurability
+
+Ο εργοδότης ορίζει:
+- `early_checkin_grace_min`: 15 (επιτρέπεται check-in 15' νωρίτερα)
+- `late_checkout_grace_min`: 10 (10' μετά τη λήξη χωρίς alert υπερωρίας)
+- `max_shift_duration_hours`: 12 (auto-alert αν η βάρδια ξεπεράσει 12h)
+
+#### 14.6 Αυτόματο Lock-out Protection
+
+Αν ένας εργαζόμενος "ξεχάσει" check-out και περάσουν 14+ ώρες → **αυτόματο alert** στον εργοδότη + system auto-flag. Αποτρέπει τρελές υπερωρίες στο ΕΡΓΑΝΗ.
+
+---
+
+### 15. Πρόσθετα Μέτρα Ασφαλείας Παραγωγής
+
+| Μέτρο | Σκοπός |
+|-------|--------|
+| **Circuit Breaker** (ΕΡΓΑΝΗ API) | Αν >50% failures σε 5min → stop calls, drain queue, alert ops |
+| **Health Check Endpoints** | `/health`, `/ready` per service — K8s liveness/readiness probes |
+| **Graceful Shutdown** | Drain Kafka consumers πριν το shutdown — μηδέν χαμένα μηνύματα |
+| **Database Connection Pooling** | pgBouncer — αποφυγή connection exhaustion σε peak |
+| **Request Tracing** | OpenTelemetry correlation IDs — trace webhook → ΕΡΓΑΝΗ response |
+| **Log Redaction** | Αυτόματη αφαίρεση ΑΦΜ, ονομάτων, GPS από debug logs |
+| **Canary Deployments** | 5% traffic στο νέο version πριν full rollout |
+| **Database Migrations Safety** | Zero-downtime migrations, backward compatible schema changes |
+| **Dependency Scanning** | `npm audit` + Snyk σε CI — block deploy on critical CVE |
+| **Backup Verification** | Εβδομαδιαίο restore test σε isolated environment |
+
+---
+
+### 16. Νομικά & Λειτουργικά Μέτρα
+
+| Ζήτημα | Αντιμετώπιση |
+|--------|-------------|
+| **GDPR Data Processing Agreement** | Κάθε εργοδότης υπογράφει DPA πριν χρησιμοποιήσει την υπηρεσία |
+| **Terms of Service** | Ξεκάθαρη αποποίηση: η SaaS πλατφόρμα δεν φέρει ευθύνη για πρόστιμα λόγω ΕΡΓΑΝΗ downtime |
+| **Audit Trail νομικό κύρος** | Τα audit logs λειτουργούν ως αποδεικτικά σε περίπτωση ελέγχου Επιθεώρησης Εργασίας |
+| **Data Retention Policy** | Audit logs: 5 χρόνια, GPS: 48h, Personal data: μέχρι λήξη σύμβασης + 1 χρόνο |
+| **Right to be Forgotten** | Employee deletion anonymizes all records (keeps timestamps, removes PII) |
+| **Breach Notification** | Αυτόματη ειδοποίηση εντός 72h σε περίπτωση data breach (GDPR Art.33) |
+
+---
+
+## Verification Plan Summary
+
+### Automated Tests
+```bash
+# Unit tests (Haversine, payload builder, validators, error mapper, fraud detection)
+npm run test:unit
+
+# Integration tests (Webhook → Kafka → DB → ERGANI Sandbox)
+ERGANI_ENV=sandbox npm run test:integration
+
+# Load tests
+k6 run tests/load/webhook-load.js
+
+# Security scan
+npx owasp-zap-scan --target http://localhost:3000
+
+# GDPR compliance check
+npm run test:gdpr
+
+# Fraud detection tests
+npm run test:unit -- --testPathPattern=fraud
+```
+
+### Manual Verification
+1. **Telegram E2E**: /start, check-in, check-out, /status, /history
+2. **ΕΡΓΑΝΗ Sandbox**: Επαλήθευση εγγραφών στο `trialv2eservices.yeka.gr`
+3. **Portal walkthrough**: Login → dashboard → alerts → employee management → reports → export
+4. **Employer notifications**: Trigger κάθε τύπο alert, verify delivery
+5. **GPS Edge Cases**: Εσωτερικοί χώροι, mock GPS, impossible travel
+6. **ΕΡΓΑΝΗ downtime simulation**: Kill mock server → verify queue retention → restore → verify batch submit
+7. **Night shift**: Check-in 23:00, check-out 07:00 → verify correct `f_reference_date`
+8. **Multi-branch auto-detect**: GPS κοντά σε branch B ενώ ο εργαζόμενος ανήκει σε A+B
+9. **Peak hour**: 500 concurrent check-ins (k6)
+10. **Fraud scenario**: GPS spoofing → alert appears in employer portal
