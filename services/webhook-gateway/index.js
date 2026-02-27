@@ -70,6 +70,20 @@ app.register(viberRoutes, { prefix: '/webhooks/viber' });
 app.register(telegramRoutes, { prefix: '/webhooks/telegram' });
 app.register(whatsappRoutes, { prefix: '/webhooks/whatsapp' });
 
+// --- Admin API Routes ---
+// REST API για το Admin Dashboard (prefix: /api/admin)
+const adminApiPlugin = require('../admin-api');
+app.register(adminApiPlugin, { prefix: '/api/admin' });
+
+// --- Static Files — Admin Dashboard ---
+// Σερβίρει τα αρχεία του dashboard (HTML/CSS/JS)
+const path = require('path');
+const fastifyStatic = require('@fastify/static');
+app.register(fastifyStatic, {
+    root: path.join(__dirname, '../../dashboard'),
+    prefix: '/admin/',
+});
+
 /**
  * Εκκίνηση του Webhook Gateway server
  * 

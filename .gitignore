@@ -32,3 +32,6 @@ coverage/
 pgdata/
 redisdata/
 kafkadata/
+
+# Backups (SQL dumps)
+backups/
