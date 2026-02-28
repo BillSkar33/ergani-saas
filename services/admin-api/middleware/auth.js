@@ -3,10 +3,12 @@
  * ΨΗΦΙΑΚΗ ΚΑΡΤΑ ΕΡΓΑΣΙΑΣ — SaaS Platform
  * Admin API — JWT Authentication Middleware
  * 
- * Διαχείριση sessions εργοδοτών:
- * - Login (bcrypt verify → JWT token)
- * - Token verification σε κάθε request
- * - Refresh token
+ * 🔒 Security Features:
+ * - HMAC-SHA256 JWT tokens (timing-safe verify)
+ * - bcrypt password hashing (factor 12)
+ * - Account lockout (5 αποτυχίες → 15 λεπτά)
+ * - JWT blacklist (logout + password change)
+ * - Audit logging (ΟΛΑ τα auth events)
  * ============================================================
  */
 'use strict';
@@ -14,17 +16,16 @@
 const crypto = require('crypto');
 const db = require('../../shared/db');
 const logger = require('../../shared/logger');
+const { isAccountLocked, recordFailedLogin, clearFailedLogins } = require('../../shared/security/account-lockout');
+const { isTokenBlacklisted, blacklistToken } = require('../../shared/security/jwt-blacklist');
+const { logAuditEvent } = require('../../shared/security/audit-logger');
 
 // JWT Secret — παραγωγή από ENCRYPTION_KEY
 const JWT_SECRET = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
 const TOKEN_EXPIRY_HOURS = 8;
 
 /**
- * Δημιουργία απλού JWT-like token
- * (Base64 encoded JSON + HMAC-SHA256 signature)
- * 
- * @param {Object} payload - Δεδομένα token { employerId, email }
- * @returns {string} - Signed token
+ * Δημιουργία JWT-like token (Base64url + HMAC-SHA256)
  */
 function createToken(payload) {
     const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
@@ -43,19 +44,14 @@ function createToken(payload) {
 }
 
 /**
- * Επαλήθευση token
- * 
- * @param {string} token - JWT token string
- * @returns {Object|null} - Decoded payload ή null αν invalid
+ * Επαλήθευση token (timing-safe)
  */
 function verifyToken(token) {
     try {
         const parts = token.split('.');
         if (parts.length !== 3) return null;
-
         const [header, body, signature] = parts;
 
-        // Έλεγχος signature
         const expectedSig = crypto
             .createHmac('sha256', JWT_SECRET)
             .update(`${header}.${body}`)
@@ -65,14 +61,10 @@ function verifyToken(token) {
             return null;
         }
 
-        // Decode payload
         const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
-
-        // Έλεγχος expiry
         if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {
             return null;
         }
-
         return payload;
     } catch {
         return null;
@@ -80,8 +72,8 @@ function verifyToken(token) {
 }
 
 /**
- * Fastify preHandler — Προστασία admin routes
- * Ελέγχει Authorization header σε κάθε request.
+ * 🔒 Fastify preHandler — Προστασία admin routes
+ * Ελέγχει: Authorization header → signature → expiry → blacklist
  */
 async function authMiddleware(request, reply) {
     const authHeader = request.headers.authorization;
@@ -96,22 +88,38 @@ async function authMiddleware(request, reply) {
         return reply.code(401).send({ error: 'Μη έγκυρο ή ληγμένο token' });
     }
 
-    // Επισύναψη employer στο request
+    // 🔒 Έλεγχος JWT blacklist (logout / αλλαγή κωδικού)
+    const blacklisted = await isTokenBlacklisted(token, payload.employerId, payload.iat);
+    if (blacklisted) {
+        return reply.code(401).send({ error: 'Το session έχει ακυρωθεί. Συνδεθείτε ξανά.' });
+    }
+
     request.employer = {
         id: payload.employerId,
         email: payload.email,
         companyName: payload.companyName,
     };
+    // Αποθήκευση raw token για πιθανό logout
+    request.rawToken = token;
+    request.tokenPayload = payload;
 }
 
 /**
- * Login εργοδότη
- * 
- * @param {string} email
- * @param {string} password
- * @returns {Object} - { token, employer } ή throws
+ * 🔒 Login εργοδότη — με lockout protection
  */
-async function loginEmployer(email, password) {
+async function loginEmployer(email, password, ipAddress) {
+    // 🔒 Έλεγχος lockout
+    const lockStatus = await isAccountLocked(email);
+    if (lockStatus.locked) {
+        await logAuditEvent({
+            eventType: 'auth_login_locked',
+            entityType: 'employer',
+            payload: { email },
+            ipAddress,
+        });
+        throw new Error(`Ο λογαριασμός είναι κλειδωμένος. Δοκιμάστε σε ${lockStatus.remainingMinutes} λεπτά.`);
+    }
+
     // Αναζήτηση εργοδότη
     const result = await db.query(
         'SELECT id, email, password_hash, company_name, is_active FROM employers WHERE email = $1',
@@ -119,6 +127,13 @@ async function loginEmployer(email, password) {
     );
 
     if (result.rowCount === 0) {
+        await recordFailedLogin(email);
+        await logAuditEvent({
+            eventType: 'auth_login_failed',
+            entityType: 'employer',
+            payload: { email, reason: 'not_found' },
+            ipAddress,
+        });
         throw new Error('Λάθος email ή κωδικός');
     }
 
@@ -128,19 +143,41 @@ async function loginEmployer(email, password) {
         throw new Error('Ο λογαριασμός είναι απενεργοποιημένος');
     }
 
-    // Bcrypt verify — χρήση crypto (απλοποιημένη σύγκριση)
-    // Σε production χρήση bcrypt.compare()
+    // Bcrypt verify
     const bcrypt = require('bcryptjs');
     const valid = await bcrypt.compare(password, employer.password_hash);
     if (!valid) {
-        throw new Error('Λάθος email ή κωδικός');
+        // 🔒 Καταγραφή αποτυχίας
+        const lockResult = await recordFailedLogin(email);
+        await logAuditEvent({
+            eventType: 'auth_login_failed',
+            entityType: 'employer',
+            entityId: employer.id,
+            payload: { email, reason: 'wrong_password', attempt: lockResult.attempts },
+            ipAddress,
+        });
+        if (lockResult.locked) {
+            throw new Error('Ο λογαριασμός κλειδώθηκε μετά από πολλές αποτυχίες. Δοκιμάστε σε 15 λεπτά.');
+        }
+        throw new Error(`Λάθος κωδικός (${lockResult.remaining} προσπάθειες απομένουν)`);
     }
 
-    // Δημιουργία token
+    // 🔒 Επιτυχία → clear lockout counter
+    await clearFailedLogins(email);
+
     const token = createToken({
         employerId: employer.id,
         email: employer.email,
         companyName: employer.company_name,
+    });
+
+    // 🔒 Audit log
+    await logAuditEvent({
+        eventType: 'auth_login_success',
+        entityType: 'employer',
+        entityId: employer.id,
+        payload: { email },
+        ipAddress,
     });
 
     logger.info({ email }, 'Επιτυχής σύνδεση εργοδότη');
@@ -156,4 +193,4 @@ async function loginEmployer(email, password) {
     };
 }
 
-module.exports = { authMiddleware, loginEmployer, createToken, verifyToken };
+module.exports = { authMiddleware, loginEmployer, createToken, verifyToken, blacklistToken };

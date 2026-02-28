@@ -9,6 +9,7 @@
  * για duplicates (idempotency), και τα σπρώχνει
  * στο Kafka queue για ασύγχρονη επεξεργασία.
  * 
+ * 🔒 Security: CORS, Helmet, Rate Limiting, CSP
  * Στόχος: Απάντηση σε < 250ms στο webhook callback
  * ============================================================
  */
@@ -27,56 +28,108 @@ const whatsappRoutes = require('./routes/whatsapp');
 
 /**
  * Δημιουργία και ρύθμιση Fastify server
- * 
- * Ρυθμίσεις:
- * - logger: Χρήση του κοινού pino logger
- * - trustProxy: true — απαραίτητο πίσω από load balancer / nginx
- * - bodyLimit: 1MB — αρκετό για webhook payloads
- * - requestTimeout: 10 δευτ. — αποτρέπει hanging requests
  */
 const app = fastify({
-    logger: logger,                         // Κοινός structured logger
-    trustProxy: true,                        // Πίσω από reverse proxy
+    logger: logger,
+    trustProxy: true,
     bodyLimit: 1048576,                      // 1MB max body size
     requestTimeout: 10000,                   // 10 δευτ. timeout
 });
 
-// --- Health Check Endpoint ---
-// Χρησιμοποιείται από Kubernetes liveness/readiness probes
-// και για manual verification ότι ο server τρέχει
-app.get('/health', async (request, reply) => {
-    return {
-        status: 'ok',
-        service: 'webhook-gateway',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-    };
+// ============================================================
+// 🔒 SECURITY: CORS — Επιτρεπόμενα origins
+// Αποτρέπει cross-origin requests από μη εξουσιοδοτημένα domains
+// ============================================================
+app.register(require('@fastify/cors'), {
+    // Σε development επιτρέπει localhost, σε production μόνο τα domains σας
+    origin: config.env === 'production'
+        ? (process.env.CORS_ALLOWED_ORIGINS || 'https://yourdomain.gr').split(',')
+        : true,  // true = all origins στο development
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,                       // Επιτρέπει cookies/auth headers
+    maxAge: 86400,                           // Preflight cache 24h
 });
+
+// ============================================================
+// 🔒 SECURITY: Helmet — HTTP Security Headers
+// Αποτρέπει clickjacking, XSS, MIME sniffing, κλπ.
+// ============================================================
+app.register(require('@fastify/helmet'), {
+    // Content Security Policy — ελέγχει τι scripts/styles εκτελούνται
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            imgSrc: ["'self'", "data:"],
+            connectSrc: ["'self'"],
+            frameSrc: ["'none'"],           // Αποτροπή embedding σε iframes
+            objectSrc: ["'none'"],          // Αποτροπή plugins (Flash κλπ)
+        },
+    },
+    // X-Frame-Options: DENY — αποτρέπει clickjacking
+    frameguard: { action: 'deny' },
+    // X-Content-Type-Options: nosniff
+    noSniff: true,
+    // X-XSS-Protection: 1; mode=block
+    xssFilter: true,
+    // Referrer-Policy: strict-origin-when-cross-origin
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    // Strict-Transport-Security: 1 χρόνος
+    hsts: {
+        maxAge: 31536000,                    // 1 χρόνο
+        includeSubDomains: true,
+        preload: true,
+    },
+});
+
+// ============================================================
+// 🔒 SECURITY: Global Error Handler — Αποτροπή info leakage
+// Στο production δεν αποκαλύπτουμε stack traces
+// ============================================================
+app.setErrorHandler(async (error, request, reply) => {
+    logger.error({ err: error, url: request.url, method: request.method }, 'Unhandled error');
+
+    // Σε production → generic error message
+    if (config.env === 'production') {
+        return reply.code(error.statusCode || 500).send({
+            error: 'Εσωτερικό σφάλμα. Δοκιμάστε ξανά.',
+        });
+    }
+    // Σε development → full error
+    return reply.code(error.statusCode || 500).send({
+        error: error.message,
+        stack: error.stack,
+    });
+});
+
+// --- Health Check Endpoint ---
+app.get('/health', async () => ({
+    status: 'ok',
+    service: 'webhook-gateway',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+}));
 
 // --- Readiness Check ---
-// Ελέγχει αν όλα τα dependencies (Kafka, DB) είναι έτοιμα
-app.get('/ready', async (request, reply) => {
-    // TODO: Έλεγχος σύνδεσης Kafka, Redis, PostgreSQL
-    return {
-        status: 'ready',
-        service: 'webhook-gateway',
-        timestamp: new Date().toISOString(),
-    };
-});
+app.get('/ready', async () => ({
+    status: 'ready',
+    service: 'webhook-gateway',
+    timestamp: new Date().toISOString(),
+}));
 
 // --- Εγγραφή Webhook Routes ---
-// Κάθε πλατφόρμα έχει το δικό της endpoint
 app.register(viberRoutes, { prefix: '/webhooks/viber' });
 app.register(telegramRoutes, { prefix: '/webhooks/telegram' });
 app.register(whatsappRoutes, { prefix: '/webhooks/whatsapp' });
 
 // --- Admin API Routes ---
-// REST API για το Admin Dashboard (prefix: /api/admin)
 const adminApiPlugin = require('../admin-api');
 app.register(adminApiPlugin, { prefix: '/api/admin' });
 
 // --- Static Files — Admin Dashboard ---
-// Σερβίρει τα αρχεία του dashboard (HTML/CSS/JS)
 const path = require('path');
 const fastifyStatic = require('@fastify/static');
 app.register(fastifyStatic, {
@@ -86,21 +139,13 @@ app.register(fastifyStatic, {
 
 /**
  * Εκκίνηση του Webhook Gateway server
- * 
- * Ροή εκκίνησης:
- * 1. Σύνδεση Kafka Producer (για αποστολή μηνυμάτων στο queue)
- * 2. Εκκίνηση Fastify HTTP server
- * 3. Graceful shutdown σε SIGTERM/SIGINT
  */
 async function start() {
     try {
-        // Βήμα 1: Σύνδεση στο Kafka cluster — πρέπει πριν ξεκινήσουν τα routes
         logger.info('Σύνδεση Kafka Producer...');
         await connectProducer();
-
-        // Βήμα 2: Εκκίνηση HTTP server
         await app.listen({ port: config.port, host: '0.0.0.0' });
-        logger.info({ port: config.port }, '🚀 Webhook Gateway ξεκίνησε');
+        logger.info({ port: config.port }, '🚀 Webhook Gateway ξεκίνησε (🔒 CORS + Helmet ενεργά)');
     } catch (err) {
         logger.error({ err }, 'Αποτυχία εκκίνησης Webhook Gateway');
         process.exit(1);
@@ -108,14 +153,10 @@ async function start() {
 }
 
 // --- Graceful Shutdown ---
-// Ολοκληρώνει τα τρέχοντα requests πριν τερματίσει
 async function gracefulShutdown(signal) {
     logger.info({ signal }, 'Λήψη σήματος τερματισμού — graceful shutdown');
-
     try {
-        // Κλείσιμο HTTP server (σταματάει νέα requests)
         await app.close();
-        // Αποσύνδεση από Kafka
         const { disconnect } = require('../../shared/kafka');
         await disconnect();
         logger.info('Webhook Gateway τερματίστηκε κανονικά');
@@ -126,11 +167,9 @@ async function gracefulShutdown(signal) {
     }
 }
 
-// Εγγραφή signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Αυτόματη εκκίνηση αν τρέχει ως standalone script
 if (require.main === module) {
     start();
 }

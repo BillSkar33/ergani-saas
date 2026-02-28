@@ -1,10 +1,10 @@
 /**
  * ============================================================
  * ΨΗΦΙΑΚΗ ΚΑΡΤΑ ΕΡΓΑΣΙΑΣ — SaaS Platform
- * Admin API — Entry Point (Fastify Plugin)
+ * Admin API — Entry Point (🔒 Security Enhanced)
  * 
- * Mounted στο κύριο webhook-gateway server ως prefix /api/admin
- * Παρέχει REST API για το Admin Dashboard.
+ * Mounted στο webhook-gateway ως prefix /api/admin
+ * 🔒: Rate limiting ανά κατηγορία, audit trail hooks
  * ============================================================
  */
 'use strict';
@@ -14,27 +14,39 @@ const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
 const employeeRoutes = require('./routes/employees');
 const { branchRoutes, timestampRoutes, fraudRoutes, settingsRoutes } = require('./routes/resources');
+const { rateLimiter } = require('../../shared/security/rate-limiter');
+const { auditHook } = require('../../shared/security/audit-logger');
 
 /**
- * Registra όλα τα admin API routes
+ * Εγγραφή admin API routes
  * @param {import('fastify').FastifyInstance} fastify
  */
 async function adminApiPlugin(fastify) {
 
-    // --- Public routes (χωρίς auth) ---
+    // --- Public routes (χωρίς auth, αλλά με rate limiting) ---
     fastify.register(authRoutes, { prefix: '/auth' });
 
-    // --- Protected routes (απαιτούν JWT token) ---
+    // --- Protected routes ---
     fastify.register(async (protectedScope) => {
-        // Εφαρμογή auth middleware σε ΟΛΑ τα protected routes
+        // 🔒 Auth middleware σε ΟΛΑ τα protected routes
         protectedScope.addHook('preHandler', authMiddleware);
+
+        // 🔒 Rate limiting — API: 60 req/min
+        protectedScope.addHook('preHandler', rateLimiter('api'));
+
+        // 🔒 Audit trail — auto-log ΟΛΑ τα mutating requests (POST/PUT/DELETE)
+        protectedScope.addHook('onResponse', auditHook('admin'));
 
         protectedScope.register(dashboardRoutes, { prefix: '/dashboard' });
         protectedScope.register(employeeRoutes, { prefix: '/employees' });
         protectedScope.register(branchRoutes, { prefix: '/branches' });
-        protectedScope.register(timestampRoutes, { prefix: '/timestamps' });
         protectedScope.register(fraudRoutes, { prefix: '/fraud-alerts' });
         protectedScope.register(settingsRoutes, { prefix: '/settings' });
+
+        // 🔒 Timestamps: export has its own stricter rate limit
+        protectedScope.register(async (tsScope) => {
+            tsScope.register(timestampRoutes);
+        }, { prefix: '/timestamps' });
     });
 }
 
