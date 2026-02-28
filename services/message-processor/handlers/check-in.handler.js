@@ -25,6 +25,7 @@ const { buildWRKCardSEPayload } = require('../../ergani-client/payload-builder')
 const { submitWorkCard } = require('../../ergani-client/work-card');
 const notifier = require('../../notification-service/template-engine');
 const fraudDetector = require('../fraud/detector');
+const { canEmployeeCheckIn } = require('../../../shared/scheduling/validator');
 
 /**
  * Χειρισμός Check-in αιτήματος
@@ -61,6 +62,28 @@ async function handle(payload, employee) {
             logger.info({ employeeId: employee.employee_id }, 'Duplicate check-in — ήδη ενεργή βάρδια');
             await notifier.sendMessage(platform, platformUserId, 'duplicate_checkin');
             return;
+        }
+
+        // --- Βήμα 1.5: 🔒 Έλεγχος Ωραρίου & Αδειών ---
+        const scheduleCheck = await canEmployeeCheckIn(employee.employee_id);
+        if (!scheduleCheck.allowed) {
+            logger.info({
+                employeeId: employee.employee_id,
+                reason: scheduleCheck.reason,
+            }, 'Check-in απορρίφθηκε — ωράριο/άδεια');
+            await notifier.sendMessage(platform, platformUserId, 'schedule_blocked', {
+                reason: scheduleCheck.reason,
+                message: scheduleCheck.message,
+            });
+            return;
+        }
+
+        // Αν αργοπόρησε → log (αλλά επιτρέπεται)
+        if (scheduleCheck.reason === 'late_arrival') {
+            logger.info({
+                employeeId: employee.employee_id,
+                lateMinutes: scheduleCheck.schedule?.lateMinutes,
+            }, 'Check-in αργοπορία');
         }
 
         // --- Βήμα 2: Εύρεση παραρτήματος (auto-detect ή default) ---

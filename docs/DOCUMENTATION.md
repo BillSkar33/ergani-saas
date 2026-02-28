@@ -1,6 +1,6 @@
 # Ψηφιακή Κάρτα Εργασίας — SaaS Chatbot Platform
 
-## Τεχνική Τεκμηρίωση
+## Τεχνική Τεκμηρίωση (v2.0)
 
 ---
 
@@ -15,6 +15,9 @@
 - **Fraud detection** — GPS spoofing, impossible travel
 - **Multi-platform** — Telegram, Viber, WhatsApp
 - **GDPR Compliance** — GPS anonymization μετά 48 ώρες
+- **Admin Dashboard** — Γραφικό περιβάλλον εργοδότη (SPA)
+- **Super Admin Panel** — Διαχείριση SaaS (trials, πλάνα)
+- **Trial System** — Δοκιμαστικές περίοδοι + subscription πλάνα
 
 ---
 
@@ -24,28 +27,20 @@
 ┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │  Messengers  │────>│  Webhook Gateway │────>│  Apache Kafka   │
 │  (Viber/TG/  │     │  (Fastify HTTP)  │     │  (Message Queue)│
-│   WhatsApp)  │     └──────────────────┘     └────────┬────────┘
-└──────────────┘                                       │
-                                                       ▼
-┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   ΕΡΓΑΝΗ ΙΙ  │<────│  ΕΡΓΑΝΗ Client   │<────│ Message         │
-│   REST API   │     │  (Auth+Submit)   │     │ Processor       │
-└──────────────┘     └──────────────────┘     │ (Kafka Consumer)│
-                                              └─────────────────┘
-                                                       │
-                     ┌──────────────────┐              │
-                     │  Notification    │<─────────────┘
-                     │  Service         │
-                     │  (TG/Viber/WA)   │
-                     └──────────────────┘
+│   WhatsApp)  │     │  🔒 CORS+Helmet  │     └────────┬────────┘
+└──────────────┘     └──────────────────┘              │
+                            │                           ▼
+                     ┌──────┴──────┐           ┌─────────────────┐
+                     │ Admin API   │           │ Message         │
+                     │ /api/admin  │           │ Processor       │
+                     │ Super Admin │           │ (Kafka Consumer)│
+                     │ /api/super  │           └─────────────────┘
+                     └─────────────┘                    │
+                                               ┌───────┴─────────┐
+                                               │  ΕΡΓΑΝΗ Client  │
+                                               │  + Notification │
+                                               └─────────────────┘
 ```
-
-#### Event Flow
-1. Εργαζόμενος στέλνει τοποθεσία μέσω messenger
-2. Webhook Gateway λαμβάνει, επαληθεύει υπογραφή, ελέγχει idempotency
-3. Μήνυμα σπρώχνεται στο Kafka topic `incoming-messages`
-4. Message Processor λαμβάνει, ελέγχει geofence, υποβάλλει στo ΕΡΓΑΝΗ
-5. Notification Service στέλνει επιβεβαίωση στον εργαζόμενο
 
 ---
 
@@ -53,237 +48,253 @@
 
 ```
 ergani/
-├── package.json                    # Dependencies & scripts
-├── .env.example                    # Environment variables template
-├── .gitignore                      # Εξαιρέσεις Git
-├── docker-compose.yml              # PostgreSQL, Redis, Kafka
+├── package.json
+├── .env.example
+├── .gitignore
+├── docker-compose.yml              🔒 Hardened (127.0.0.1 binds, Redis password)
+│
+├── scripts/                        📜 Automation (11 scripts)
+│   ├── first-setup.sh
+│   ├── start.sh / stop.sh / restart.sh / status.sh
+│   ├── db-setup.sh / backup.sh
+│   ├── git-push.sh / test.sh / logs.sh / help.sh
 │
 ├── infrastructure/
-│   └── migrations/
-│       └── 001_initial.sql         # Database schema (9 πίνακες)
+│   ├── migrations/
+│   │   ├── 001_initial.sql         DB schema (9 πίνακες)
+│   │   └── 002_trial_system.sql    Trial system (plans, super_admins)
+│   ├── seeds/demo_data.sql
+│   └── nginx/ergani.conf           🔒 Production nginx config
 │
-├── shared/                         # Κοινές βιβλιοθήκες
-│   ├── config/index.js             # Κεντρικές ρυθμίσεις (env vars)
-│   ├── encryption/index.js         # AES-256-GCM κρυπτογράφηση
-│   ├── logger/index.js             # Structured JSON logging (pino)
-│   ├── db/index.js                 # PostgreSQL connection pool
-│   ├── redis/index.js              # Redis client (cache, sessions)
-│   └── kafka/index.js              # Kafka producer & consumer
+├── shared/
+│   ├── config/index.js
+│   ├── encryption/index.js         AES-256-GCM
+│   ├── logger/index.js             Pino structured JSON
+│   ├── db/index.js                 PostgreSQL pool
+│   ├── redis/index.js              Redis client
+│   ├── kafka/index.js              Kafka producer/consumer
+│   └── security/                   🔒 Security modules
+│       ├── sanitize.js             XSS/SQL/Password validation
+│       ├── rate-limiter.js         Redis per-endpoint limiter
+│       ├── account-lockout.js      5-fail → 15min lockout
+│       ├── jwt-blacklist.js        Logout + password invalidation
+│       ├── audit-logger.js         Enhanced audit trail
+│       ├── trial-guard.js          Trial/subscription limits
+│       └── index.js                Barrel export
 │
 ├── services/
-│   ├── webhook-gateway/            # HTTP Webhook Server
-│   │   ├── index.js                # Fastify server entry
-│   │   ├── middleware/
-│   │   │   ├── signature-verify.js # Crypto signature verification
-│   │   │   └── idempotency.js      # Duplicate message prevention
-│   │   └── routes/
-│   │       ├── telegram.js         # Telegram webhook handler
-│   │       ├── viber.js            # Viber webhook handler
-│   │       └── whatsapp.js         # WhatsApp webhook handler
-│   │
-│   ├── message-processor/          # Kafka Consumer Workers
-│   │   ├── index.js                # Consumer entry + message router
-│   │   ├── handlers/
-│   │   │   ├── check-in.handler.js   # Έναρξη βάρδιας
-│   │   │   ├── check-out.handler.js  # Λήξη βάρδιας
-│   │   │   ├── registration.handler.js # Εγγραφή εργαζομένου
-│   │   │   ├── status.handler.js     # Κατάσταση / ιστορικό
-│   │   │   └── unknown.handler.js    # Αγνώριστο μήνυμα
-│   │   ├── geofencing/
-│   │   │   ├── haversine.js        # Αλγόριθμος Haversine
-│   │   │   └── validator.js        # Geofence validator
-│   │   └── fraud/
-│   │       └── detector.js         # Fraud detection engine
-│   │
-│   ├── ergani-client/              # ΕΡΓΑΝΗ ΙΙ API Client
-│   │   ├── auth.js                 # JWT authentication + cache
-│   │   ├── payload-builder.js      # WRKCardSE JSON builder
-│   │   ├── work-card.js            # Submit + retry + DLQ
-│   │   └── error-mapper.js         # Error → Greek messages
-│   │
-│   ├── notification-service/       # Αποστολή μηνυμάτων chatbot
-│   │   ├── template-engine.js      # Message templates (Ελληνικά)
-│   │   ├── telegram-sender.js      # Telegram Bot API sender
-│   │   ├── viber-sender.js         # Viber Bot API sender
-│   │   └── whatsapp-sender.js      # WhatsApp Cloud API sender
-│   │
-│   └── scheduler/                  # CRON Jobs
-│       ├── index.js                # Scheduler entry (5 jobs)
-│       ├── checkout-reminder.js    # Υπενθύμιση check-out (>8h)
-│       ├── pending-retry.js        # Retry failed ΕΡΓΑΝΗ submissions
-│       ├── gps-cleanup.js          # GDPR GPS anonymization (48h)
-│       ├── jwt-refresh.js          # Proactive JWT refresh
-│       └── daily-summary.js        # Ημερήσια σύνοψη εργοδότη
+│   ├── webhook-gateway/            HTTP Server (🔒 CORS+Helmet)
+│   ├── admin-api/                  REST API εργοδοτών
+│   │   ├── middleware/auth.js      🔒 JWT + lockout + blacklist
+│   │   └── routes/ (auth, dashboard, employees, resources)
+│   ├── super-admin-api/            SaaS owner management
+│   │   └── index.js                Stats, Employers, Trials, Plans
+│   ├── message-processor/          Kafka Consumer Workers
+│   ├── ergani-client/              ΕΡΓΑΝΗ ΙΙ API Client
+│   ├── notification-service/       Chatbot message sender
+│   └── scheduler/                  CRON Jobs (5 jobs)
 │
-├── tests/
-│   └── unit/
-│       ├── haversine.test.js       # 9 tests
-│       ├── payload-builder.test.js # 9 tests
-│       ├── signature-verify.test.js # 7 tests
-│       ├── error-mapper.test.js    # 7 tests
-│       ├── encryption.test.js      # 6 tests
-│       └── geofence-validator.test.js # 6 tests
+├── dashboard/
+│   ├── index.html                  Employer Admin Dashboard (SPA)
+│   ├── super.html                  Super Admin Panel (SPA)
+│   ├── css/style.css               Premium dark theme
+│   └── js/ (api.js, pages.js, app.js)
 │
-├── .github/workflows/
-│   └── ci.yml                      # GitHub Actions CI Pipeline
+├── tests/unit/                     45 unit tests (Jest)
+├── .github/workflows/ci.yml       CI + 🔒 Security scan
 │
-└── docs/
-    └── DOCUMENTATION.md            # Αυτό το αρχείο
+└── docs/                           📖 Τεκμηρίωση
+    ├── DOCUMENTATION.md            Αυτό το αρχείο
+    ├── ADMIN_SETUP_GUIDE.md
+    ├── SANDBOX_GUIDE.md
+    ├── GITHUB_SETUP_GUIDE.md
+    ├── DASHBOARD_GUIDE.md
+    ├── SCRIPTS_GUIDE.md
+    ├── SECURITY_PLANNER.md
+    ├── SECURITY_REPORT.md
+    └── CHEATSHEET.md
 ```
 
 ---
 
 ### 4. Βάση Δεδομένων (PostgreSQL 16)
 
-#### Πίνακες
-
-| Πίνακας | Περιγραφή | Σημαντικά πεδία |
-|---------|-----------|-----------------|
-| `employers` | Εργοδότες (εταιρείες) | afm_ergodoti, company_name, subscription |
-| `branches` | Παραρτήματα (καταστήματα) | GPS, geofence_radius, ΕΡΓΑΝΗ credentials |
-| `employees` | Εργαζόμενοι | ΑΦΜ, ονοματεπώνυμο, trust_score, linking_code |
-| `messenger_links` | Σύνδεση messenger ↔ εργαζόμενος | platform, platform_user_id |
-| `time_stamps` | Χρονοσημάνσεις (check-in/out) | GPS, geofence_status, ergani_status |
-| `processed_messages` | Idempotency (αποτροπή duplicates) | message_id, platform |
-| `audit_log` | Καταγραφή ενεργειών (5 χρόνια) | event_type, payload, response |
-| `fraud_alerts` | Fraud detection alerts | alert_type, severity, details |
-| `employer_notification_settings` | Ρυθμίσεις ειδοποιήσεων | notify_on_* flags |
-
----
-
-### 5. Ασφάλεια
-
-| Μηχανισμός | Περιγραφή |
-|------------|-----------|
-| **Webhook Signatures** | HMAC-SHA256 (Viber), Secret Token (Telegram), SHA256 (WhatsApp) |
-| **Encryption at Rest** | AES-256-GCM για ΕΡΓΑΝΗ credentials |
-| **JWT Management** | Redis cache, proactive refresh, auto-invalidation σε 401 |
-| **GDPR GPS** | Anonymization μετά 48 ώρες (latitude/longitude → NULL) |
-| **Idempotency** | DB-based (ON CONFLICT DO NOTHING) κατά webhook retries |
-| **Fraud Detection** | Impossible travel, zero accuracy, exact coordinates |
-| **Timing-Safe** | crypto.timingSafeEqual σε signature verification |
+| Πίνακας                          | Περιγραφή                                             |
+| -------------------------------- | ----------------------------------------------------- |
+| `employers`                      | Εργοδότες + trial_status, max_employees, max_branches |
+| `branches`                       | Παραρτήματα (GPS, geofence, ΕΡΓΑΝΗ credentials)       |
+| `employees`                      | Εργαζόμενοι (ΑΦΜ, linking_code)                       |
+| `messenger_links`                | Σύνδεση messenger ↔ εργαζόμενος                       |
+| `time_stamps`                    | Χρονοσημάνσεις (check-in/out, GPS, status)            |
+| `processed_messages`             | Idempotency (duplicate prevention)                    |
+| `audit_log`                      | Audit trail (5 χρόνια, PII redacted)                  |
+| `fraud_alerts`                   | GPS spoofing, impossible travel                       |
+| `employer_notification_settings` | Notification preferences                              |
+| `subscription_plans`             | Trial/Basic/Pro/Enterprise (limits)                   |
+| `super_admins`                   | SaaS owner accounts                                   |
 
 ---
 
-### 6. Εγκατάσταση & Εκτέλεση
+### 5. Ασφάλεια 🔒
+
+| Μηχανισμός             | Λεπτομέρειες                                        |
+| ---------------------- | --------------------------------------------------- |
+| **CORS**               | Environment-aware (`CORS_ALLOWED_ORIGINS`)          |
+| **Helmet**             | CSP, HSTS, X-Frame-Options, XSS, noSniff            |
+| **Webhook Signatures** | HMAC-SHA256 (Viber), Secret Token (TG), SHA256 (WA) |
+| **Encryption at Rest** | AES-256-GCM για ΕΡΓΑΝΗ credentials                  |
+| **JWT Auth**           | HMAC-SHA256, timing-safe verify, 8h expiry          |
+| **JWT Blacklist**      | Redis — logout + password change invalidation       |
+| **Account Lockout**    | 5 αποτυχίες → 15 λεπτά lockout                      |
+| **Password Policy**    | 8+ chars, uppercase, number, special char           |
+| **Rate Limiting**      | Redis — auth: 5/min, api: 60/min, export: 5/min     |
+| **Input Sanitization** | XSS entity encoding, SQL pattern stripping          |
+| **Audit Trail**        | Auto-log POST/PUT/DELETE, PII redaction             |
+| **Trial Guard**        | Auto-expire, blocks mutating ops, limit enforcement |
+| **GDPR GPS**           | Anonymization μετά 48 ώρες                          |
+| **Fraud Detection**    | Impossible travel, zero accuracy, exact coords      |
+| **Docker Hardening**   | 127.0.0.1 binds, Redis password, memory limits      |
+| **CI Security**        | npm audit, .env leak check, secrets search          |
+| **Error Handler**      | No stack traces in production                       |
+| **Nginx Template**     | HTTPS/TLS, per-endpoint rate limiting               |
+
+---
+
+### 6. Trial/Subscription System
+
+#### Πλάνα
+
+| Πλάνο               | Εργαζόμενοι | Παραρτήματα | Τιμή            |
+| ------------------- | ----------- | ----------- | --------------- |
+| Trial (δοκιμαστικό) | 5           | 1           | Δωρεάν (14 ημ.) |
+| Basic               | 10          | 2           | €9.90/μήνα      |
+| Pro                 | 50          | 5           | €29.90/μήνα     |
+| Enterprise          | 500         | 50          | €79.90/μήνα     |
+
+#### Status
+
+| Status      | Σημασία                          |
+| ----------- | -------------------------------- |
+| `trial`     | Δοκιμαστική περίοδος (countdown) |
+| `active`    | Πληρωμένο — χωρίς λήξη           |
+| `expired`   | Trial λήξη — read-only           |
+| `suspended` | Αναστολή — read-only             |
+
+#### Super Admin Panel: `/admin/super.html`
+- Dashboard: 8 stats cards
+- Employers: λίστα + filters + trial actions
+- Plans: overview + edit
+
+---
+
+### 7. API Endpoints
+
+#### Webhook Gateway
+
+| Method   | Endpoint             | Περιγραφή        |
+| -------- | -------------------- | ---------------- |
+| GET      | `/health`            | Health check     |
+| POST     | `/webhooks/telegram` | Telegram webhook |
+| POST     | `/webhooks/viber`    | Viber webhook    |
+| GET/POST | `/webhooks/whatsapp` | WhatsApp webhook |
+
+#### Admin API (εργοδότης)
+
+| Method           | Endpoint                          | Auth |
+| ---------------- | --------------------------------- | ---- |
+| POST             | `/api/admin/auth/login`           | —    |
+| POST             | `/api/admin/auth/register`        | —    |
+| POST             | `/api/admin/auth/logout`          | JWT  |
+| PUT              | `/api/admin/auth/change-password` | JWT  |
+| GET              | `/api/admin/dashboard/stats`      | JWT  |
+| GET/POST/PUT/DEL | `/api/admin/employees`            | JWT  |
+| GET/POST/PUT     | `/api/admin/branches`             | JWT  |
+| GET              | `/api/admin/timestamps`           | JWT  |
+| GET              | `/api/admin/fraud-alerts`         | JWT  |
+| GET/PUT          | `/api/admin/settings`             | JWT  |
+
+#### Super Admin API (SaaS owner)
+
+| Method  | Endpoint                         | Auth         |
+| ------- | -------------------------------- | ------------ |
+| POST    | `/api/super/auth/login`          | —            |
+| POST    | `/api/super/auth/setup`          | — (μία φορά) |
+| GET     | `/api/super/stats`               | Super JWT    |
+| GET     | `/api/super/employers`           | Super JWT    |
+| PUT     | `/api/super/employers/:id/trial` | Super JWT    |
+| GET/PUT | `/api/super/plans`               | Super JWT    |
+
+---
+
+### 8. Εγκατάσταση
 
 ```bash
-# 1. Κλωνοποίηση
-git clone <repository> && cd ergani
+# Ολοκληρωμένη (πρώτη φορά)
+./scripts/first-setup.sh
 
-# 2. Εγκατάσταση dependencies
+# Ή χειροκίνητα
 npm install
-
-# 3. Ρύθμιση environment variables
 cp .env.example .env
-# Επεξεργασία .env με τις σωστές τιμές
-
-# 4. Εκκίνηση υποδομής (Docker)
-docker-compose up -d
-
-# 5. Εκτέλεση migration
+docker compose up -d
 npm run migrate
-
-# 6. Εκτέλεση tests
-npm test
-
-# 7. Εκκίνηση services
-node services/webhook-gateway/index.js    # HTTP Server
-node services/message-processor/index.js  # Kafka Consumer
-node services/scheduler/index.js          # CRON Jobs
+npm run migrate:trial
+npm run seed
+./scripts/start.sh
 ```
 
 ---
 
-### 7. Testing
+### 9. Tests
 
-#### Unit Tests (Jest)
-
-| Test Suite | Αρχείο | Tests |
-|-----------|--------|-------|
-| Haversine Distance | `haversine.test.js` | 9 |
-| Payload Builder | `payload-builder.test.js` | 9 |
-| Signature Verify | `signature-verify.test.js` | 7 |
-| Error Mapper | `error-mapper.test.js` | 7 |
-| Encryption | `encryption.test.js` | 6 |
-| Geofence Validator | `geofence-validator.test.js` | 6 |
-| **Σύνολο** | | **44** |
+| Suite              | Tests  |
+| ------------------ | ------ |
+| Haversine Distance | 9      |
+| Payload Builder    | 9      |
+| Signature Verify   | 7      |
+| Error Mapper       | 7      |
+| Encryption         | 6      |
+| Geofence Validator | 7      |
+| **Σύνολο**         | **45** |
 
 ```bash
-npm test                    # Εκτέλεση tests
-npm test -- --coverage      # Με code coverage
+./scripts/test.sh            # 45 tests
+./scripts/test.sh --coverage # + coverage report
 ```
 
 ---
 
-### 8. Scheduled Jobs (CRON)
+### 10. Τεχνολογίες
 
-| Job | Χρονισμός | Περιγραφή |
-|-----|-----------|-----------|
-| Checkout Reminder | `*/5 * * * *` (κάθε 5 λεπτά) | Υπενθύμιση σε εργαζόμενους με ανοιχτή βάρδια > 8 ώρες |
-| Pending Retry | `*/2 * * * *` (κάθε 2 λεπτά) | Retry αποτυχημένων υποβολών ΕΡΓΑΝΗ |
-| GPS Cleanup (GDPR) | `0 * * * *` (κάθε ώρα) | Διαγραφή GPS δεδομένων μετά 48 ώρες |
-| JWT Refresh | `*/10 * * * *` (κάθε 10 λεπτά) | Proactive ανανέωση JWT tokens |
-| Daily Summary | `0 23 * * *` (23:00 Athens) | Ημερήσια σύνοψη βαρδιών ανά εργοδότη |
-
----
-
-### 9. API Endpoints
-
-| Method | Endpoint | Περιγραφή |
-|--------|----------|-----------|
-| GET | `/health` | Health check |
-| GET | `/ready` | Readiness probe |
-| POST | `/webhooks/telegram` | Telegram webhook |
-| POST | `/webhooks/viber` | Viber webhook |
-| GET/POST | `/webhooks/whatsapp` | WhatsApp webhook (GET=verify, POST=events) |
+| Τεχνολογία          | Χρήση                                        |
+| ------------------- | -------------------------------------------- |
+| **Node.js 20+**     | Runtime                                      |
+| **Fastify**         | HTTP Server                                  |
+| **PostgreSQL 16**   | Database                                     |
+| **Redis 7**         | Cache, rate limiting, lockout, JWT blacklist |
+| **Apache Kafka**    | Message queue                                |
+| **bcryptjs**        | Password hashing                             |
+| **@fastify/cors**   | CORS protection                              |
+| **@fastify/helmet** | Security headers                             |
+| **@fastify/static** | Static file serving                          |
+| **pino**            | JSON structured logging                      |
+| **luxon**           | Timezone-safe datetime                       |
+| **Jest**            | Unit testing                                 |
 
 ---
 
-### 10. Μηνύματα Chatbot (Ελληνικά)
+### 11. Documentation
 
-Όλα τα μηνύματα στον εργαζόμενο είναι στα **Ελληνικά**, ορισμένα με emoji:
-
-- ✅ Επιτυχία check-in/out
-- ⏳ Αναμονή επιβεβαίωσης ΕΡΓΑΝΗ
-- 📍 Εκτός geofence (με απόσταση)
-- 📡 Χαμηλή ακρίβεια GPS
-- ⚠️ Σφάλμα / μη εγγεγραμμένος
-- 📖 Οδηγίες χρήσης / βοήθεια
-- 📊 Κατάσταση βάρδιας
-- 📋 Ιστορικό βαρδιών
-
----
-
-### 11. Τεχνολογίες
-
-| Τεχνολογία | Χρήση |
-|-----------|--------|
-| **Node.js 20+** | Runtime |
-| **Fastify** | HTTP Server (Webhook Gateway) |
-| **PostgreSQL 16** | Database |
-| **Redis 7** | JWT cache, rate limiting |
-| **Apache Kafka** | Message queue (event-driven) |
-| **pino** | JSON structured logging |
-| **luxon** | Timezone-safe datetime (EET/EEST) |
-| **KafkaJS** | Kafka client |
-| **ioredis** | Redis client |
-| **axios** | HTTP client (ΕΡΓΑΝΗ API, messenger APIs) |
-| **Jest** | Unit testing framework |
-| **node-cron** | Scheduled jobs |
+| Αρχείο                  | Περιεχόμενο                            |
+| ----------------------- | -------------------------------------- |
+| `ADMIN_SETUP_GUIDE.md`  | Πλήρης οδηγός εγκατάστασης             |
+| `SANDBOX_GUIDE.md`      | Πειραματικό testing                    |
+| `GITHUB_SETUP_GUIDE.md` | Git/CI/CD ρύθμιση                      |
+| `DASHBOARD_GUIDE.md`    | Οδηγός Admin Dashboard + API reference |
+| `SCRIPTS_GUIDE.md`      | Οδηγός 11 scripts                      |
+| `SECURITY_PLANNER.md`   | Security audit plan + OWASP            |
+| `SECURITY_REPORT.md`    | Αναφορά υλοποίησης ασφάλειας           |
+| `CHEATSHEET.md`         | Γρήγορη αναφορά εντολών                |
 
 ---
 
-### 12. Σημαντικές Σημειώσεις
-
-> ⚠️ **Timezone**: Πάντα χρήση `Europe/Athens` (EET +02:00 / EEST +03:00). Ποτέ UTC!
-
-> ⚠️ **Night Shifts**: Η `reference_date` πρέπει πάντα να αντιστοιχεί στην ημερομηνία ΕΝΑΡΞΗΣ βάρδιας, ακόμα κι αν το check-out γίνει μετά μεσάνυχτα.
-
-> ⚠️ **Ελληνικά Ονόματα**: Τα `f_eponymo` και `f_onoma` πρέπει να ταιριάζουν ΑΚΡΙΒΩΣ με το μητρώο ΕΡΓΑΝΗ (ΚΕΦΑΛΑΙΑ).
-
-> ⚠️ **WhatsApp Retries**: Το WhatsApp κάνει retries μέχρι 7 ημέρες αν δεν λάβει 200 OK. Η idempotency είναι κρίσιμη!
-
----
-
-*Τελευταία ενημέρωση: Φεβρουάριος 2026*
+*Τελευταία ενημέρωση: 28 Φεβρουαρίου 2026 — v2.0*

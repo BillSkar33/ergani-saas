@@ -129,6 +129,11 @@ app.register(whatsappRoutes, { prefix: '/webhooks/whatsapp' });
 const adminApiPlugin = require('../admin-api');
 app.register(adminApiPlugin, { prefix: '/api/admin' });
 
+// --- Super Admin API Routes ---
+// Ξεχωριστό API για τον SaaS owner (prefix: /api/super)
+const superAdminPlugin = require('../super-admin-api');
+app.register(superAdminPlugin, { prefix: '/api/super' });
+
 // --- Static Files — Admin Dashboard ---
 const path = require('path');
 const fastifyStatic = require('@fastify/static');

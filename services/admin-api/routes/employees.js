@@ -14,6 +14,8 @@
 const crypto = require('crypto');
 const db = require('../../../shared/db');
 const logger = require('../../../shared/logger');
+const { checkEmployeeLimit } = require('../../../shared/security/trial-guard');
+const { sanitizeHtml } = require('../../../shared/security/sanitize');
 
 async function employeeRoutes(fastify) {
 
@@ -70,6 +72,15 @@ async function employeeRoutes(fastify) {
 
         if (!/^\d{9}$/.test(afm)) {
             return reply.code(400).send({ error: 'Μη έγκυρο ΑΦΜ (9 ψηφία)' });
+        }
+
+        // 🔒 Έλεγχος ορίου εργαζομένων (trial/plan limit)
+        const limit = await checkEmployeeLimit(eid);
+        if (!limit.allowed) {
+            return reply.code(403).send({
+                error: `Ξεπεράσατε το όριο εργαζομένων (${limit.current}/${limit.max}). Αναβαθμίστε το πλάνο σας.`,
+                current: limit.current, max: limit.max,
+            });
         }
 
         try {

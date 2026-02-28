@@ -13,6 +13,8 @@
     "test:gdpr": "jest --testPathPattern=gdpr --verbose",
     "lint": "eslint .",
     "migrate": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/migrations/001_initial.sql",
+    "migrate:trial": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/migrations/002_trial_system.sql",
+    "migrate:schedules": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/migrations/003_schedules.sql",
     "seed": "docker exec -i ergani-postgres psql -U ergani_user -d ergani_db < infrastructure/seeds/demo_data.sql"
   },
   "dependencies": {

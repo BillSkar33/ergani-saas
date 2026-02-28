@@ -14,8 +14,10 @@ const authRoutes = require('./routes/auth');
 const dashboardRoutes = require('./routes/dashboard');
 const employeeRoutes = require('./routes/employees');
 const { branchRoutes, timestampRoutes, fraudRoutes, settingsRoutes } = require('./routes/resources');
+const { scheduleRoutes, leaveRoutes, calendarRoutes } = require('./routes/schedules');
 const { rateLimiter } = require('../../shared/security/rate-limiter');
 const { auditHook } = require('../../shared/security/audit-logger');
+const { trialGuard } = require('../../shared/security/trial-guard');
 
 /**
  * Εγγραφή admin API routes
@@ -31,6 +33,9 @@ async function adminApiPlugin(fastify) {
         // 🔒 Auth middleware σε ΟΛΑ τα protected routes
         protectedScope.addHook('preHandler', authMiddleware);
 
+        // 🔒 Trial guard — ελέγχει κατάσταση subscription
+        protectedScope.addHook('preHandler', trialGuard);
+
         // 🔒 Rate limiting — API: 60 req/min
         protectedScope.addHook('preHandler', rateLimiter('api'));
 
@@ -42,6 +47,9 @@ async function adminApiPlugin(fastify) {
         protectedScope.register(branchRoutes, { prefix: '/branches' });
         protectedScope.register(fraudRoutes, { prefix: '/fraud-alerts' });
         protectedScope.register(settingsRoutes, { prefix: '/settings' });
+        protectedScope.register(scheduleRoutes, { prefix: '/schedules' });
+        protectedScope.register(leaveRoutes, { prefix: '/leaves' });
+        protectedScope.register(calendarRoutes, { prefix: '/calendar' });
 
         // 🔒 Timestamps: export has its own stricter rate limit
         protectedScope.register(async (tsScope) => {
