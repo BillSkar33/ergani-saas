@@ -34,13 +34,13 @@ services:
 
 ## Commands (via claude/commands/)
 ```bash
-./claude/commands/start.sh      # Start all services
-./claude/commands/stop.sh       # Stop all services
-./claude/commands/restart.sh    # Restart services
-./claude/commands/status.sh     # Show service health
-./claude/commands/logs.sh       # Tail logs
-./claude/commands/backup.sh     # Backup database
-./claude/commands/db-setup.sh   # Initialize database
+./claude/commands/start.sh       # Start all services
+./claude/commands/stop.sh        # Stop all services
+./claude/commands/restart.sh     # Restart services
+./claude/commands/status.sh      # Show service health
+./claude/commands/logs.sh        # Tail logs
+./claude/commands/backup.sh      # Backup database
+./claude/commands/db-setup.sh    # Initialize database
 ./claude/commands/first-setup.sh # First-time setup
 ```
 

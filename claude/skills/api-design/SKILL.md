@@ -44,15 +44,15 @@ project-main/services/admin-api/routes/
 ```
 
 ## Standard Error Codes
-| Code | HTTP | Meaning |
-|------|------|---------|
-| `UNAUTHORIZED` | 401 | Missing/invalid JWT |
-| `FORBIDDEN` | 403 | Insufficient role |
-| `NOT_FOUND` | 404 | Resource not found |
-| `VALIDATION_ERROR` | 400 | Invalid input |
-| `CONFLICT` | 409 | Duplicate resource |
-| `ERGANI_ERROR` | 502 | ΕΡΓΑΝΗ ΙΙ API failure |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
+| Code               | HTTP | Meaning                   |
+| ------------------ | ---- | ------------------------- |
+| `UNAUTHORIZED`     | 401  | Missing/invalid JWT       |
+| `FORBIDDEN`        | 403  | Insufficient role         |
+| `NOT_FOUND`        | 404  | Resource not found        |
+| `VALIDATION_ERROR` | 400  | Invalid input             |
+| `CONFLICT`         | 409  | Duplicate resource        |
+| `ERGANI_ERROR`     | 502  | ΕΡΓΑΝΗ ΙΙ API failure     |
+| `INTERNAL_ERROR`   | 500  | Unexpected server error   |
 
 ## Route Template
 ```javascript

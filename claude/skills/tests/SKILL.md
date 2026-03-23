@@ -66,12 +66,12 @@ const TEST_COMPANY_ID = 'test-company-uuid';
 ```
 
 ## Coverage Goals
-| Layer | Target |
-|-------|--------|
-| Fraud detection | 90%+ |
-| Ergani client | 80%+ |
-| Auth middleware | 85%+ |
-| Message handlers | 75%+ |
+| Layer            | Target |
+| ---------------- | ------ |
+| Fraud detection  | 90%+   |
+| Ergani client    | 80%+   |
+| Auth middleware  | 85%+   |
+| Message handlers | 75%+   |
 
 ## Do's & Don'ts
 - ✅ Mock external APIs (ΕΡΓΑΝΗ ΙΙ, Messenger) in unit tests

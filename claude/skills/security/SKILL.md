@@ -17,11 +17,11 @@ const token = jwt.sign(
 ```
 
 ### Role Hierarchy
-| Role | Permissions |
-|------|------------|
-| `super_admin` | All companies, billing, system config |
-| `employer` | Own company: employees, schedules, geofences |
-| `employee` | Check-in/out, own records only |
+| Role          | Permissions                            |
+| ------------- | -------------------------------------- |
+| `super_admin` | All companies, billing, system config  |
+| `employer`    | Own company: employees, schedules, geofences |
+| `employee`    | Check-in/out, own records only         |
 
 ### Middleware
 ```javascript

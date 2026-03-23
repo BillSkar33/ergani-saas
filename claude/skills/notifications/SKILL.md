@@ -29,19 +29,19 @@ const templates = {
       { title: '❓ Βοήθεια', payload: 'HELP' }
     ]
   }),
-  
+
   CHECK_IN_SUCCESS: (data) => ({
     text: `✅ Η είσοδός σας καταχωρήθηκε στην ΕΡΓΑΝΗ στις ${data.time}`
   }),
-  
+
   LEAVE_APPROVED: (data) => ({
     text: `✅ Η αίτηση άδειάς σας εγκρίθηκε για ${data.dates}`
   }),
-  
+
   LEAVE_REJECTED: (data) => ({
     text: `❌ Η αίτηση άδειάς σας απορρίφθηκε. Αιτία: ${data.reason}`
   }),
-  
+
   WEEKLY_SUMMARY: (data) => ({
     text: `📊 Εβδομαδιαία σύνοψη: ${data.checkins} παρουσίες, ${data.hours}h εργασία`
   })
@@ -69,13 +69,13 @@ cron.schedule('0 20 * * 0', async () => {
 // notification-service/index.js
 async function send(recipientId, templateName, data, platform = 'messenger') {
   const message = templates[templateName](data);
-  
+
   if (platform === 'messenger') {
     await messengerAPI.sendMessage(recipientId, message);
   } else if (platform === 'viber') {
     await viberAPI.sendMessage(recipientId, message);
   }
-  
+
   // Log notification sent
   await db.query(
     'INSERT INTO notification_log (employee_id, template, sent_at) VALUES ($1, $2, NOW())',
@@ -95,13 +95,13 @@ Webhook → webhook-gateway → Kafka topic: 'incoming-messages'
 ```
 
 ## Key Intents
-| Intent | Trigger | Handler |
-|--------|---------|---------|
-| `CHECK_IN` | "Μπήκα", GPS checkin | `checkin.handler.js` |
-| `CHECK_OUT` | "Βγήκα" | `checkout.handler.js` |
-| `MY_SCHEDULE` | "Πρόγραμμά μου" | `schedule.handler.js` |
-| `REQUEST_LEAVE` | "Θέλω άδεια" | `leave.handler.js` |
-| `HELP` | "Βοήθεια" | `help.handler.js` |
+| Intent         | Trigger                  | Handler                   |
+| -------------- | ------------------------ | ------------------------- |
+| `CHECK_IN`     | "Μπήκα", GPS checkin     | `checkin.handler.js`      |
+| `CHECK_OUT`    | "Βγήκα"                  | `checkout.handler.js`     |
+| `MY_SCHEDULE`  | "Πρόγραμμά μου"          | `schedule.handler.js`     |
+| `REQUEST_LEAVE`| "Θέλω άδεια"             | `leave.handler.js`        |
+| `HELP`         | "Βοήθεια"                | `help.handler.js`         |
 
 ## Do's & Don'ts
 - ✅ Always use `template-engine.js` — never hardcode messages

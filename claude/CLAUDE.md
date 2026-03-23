@@ -12,13 +12,13 @@
 **Core value prop**: Employers register their company, employees check in/out via Facebook Messenger or Viber chatbot, the system validates GPS geofencing, detects fraud, and automatically submits work card records to ΕΡΓΑΝΗ ΙΙ in real-time.
 
 ### Key Concepts
-| Concept | Description |
-|---------|-------------|
-| **ΕΡΓΑΝΗ ΙΙ** | Greek Ministry of Labour digital system for work cards |
-| **Ψηφιακή Κάρτα Εργασίας** | Digital work card — mandatory check-in/out record |
-| **Geofencing** | GPS zone validation — employees must be on-site to check in |
-| **Multi-tenant** | One platform, many companies (employers), each isolated |
-| **Chatbot** | Messenger/Viber bot for employee interactions |
+| Concept                    | Description                                                 |
+| -------------------------- | ----------------------------------------------------------- |
+| **ΕΡΓΑΝΗ ΙΙ**              | Greek Ministry of Labour digital system for work cards      |
+| **Ψηφιακή Κάρτα Εργασίας** | Digital work card — mandatory check-in/out record           |
+| **Geofencing**             | GPS zone validation — employees must be on-site to check in |
+| **Multi-tenant**           | One platform, many companies (employers), each isolated     |
+| **Chatbot**                | Messenger/Viber bot for employee interactions               |
 
 ---
 
@@ -115,23 +115,23 @@ PostgreSQL + Redis
 ```
 
 ### Services
-| Service | Port | Role |
-|---------|------|------|
-| `webhook-gateway` | 3000 | Entry point for chatbot webhooks |
-| `message-processor` | — | Core logic (Kafka consumer) |
-| `admin-api` | 3001 | Employer dashboard REST API |
-| `super-admin-api` | 3002 | Platform admin REST API |
-| `ergani-client` | — | ΕΡΓΑΝΗ ΙΙ API client library |
-| `scheduler` | 3003 | Cron jobs & proactive notifications |
-| `notification-service` | — | Push notification dispatcher |
+| Service                | Port | Role                                |
+| ---------------------- | ---- | ----------------------------------- |
+| `webhook-gateway`      | 3000 | Entry point for chatbot webhooks    |
+| `message-processor`    | —    | Core logic (Kafka consumer)         |
+| `admin-api`            | 3001 | Employer dashboard REST API         |
+| `super-admin-api`      | 3002 | Platform admin REST API             |
+| `ergani-client`        | —    | ΕΡΓΑΝΗ ΙΙ API client library        |
+| `scheduler`            | 3003 | Cron jobs & proactive notifications |
+| `notification-service` | —    | Push notification dispatcher        |
 
 ### Shared Infrastructure
-| Component | Use |
-|-----------|-----|
-| PostgreSQL | Primary data store |
-| Redis | Sessions, caching, rate limiting |
-| Kafka | Async message queue between services |
-| Nginx | Reverse proxy, SSL termination |
+| Component  | Use                                  |
+| ---------- | ------------------------------------ |
+| PostgreSQL | Primary data store                   |
+| Redis      | Sessions, caching, rate limiting     |
+| Kafka      | Async message queue between services |
+| Nginx      | Reverse proxy, SSL termination       |
 
 ---
 
@@ -143,26 +143,26 @@ PostgreSQL + Redis
 3. 📖 Read the relevant **`claude/skills/*/SKILL.md`** — domain-specific patterns
 
 ### Skill files to read by task type:
-| Task type | Read SKILL.md |
-|-----------|--------------|
-| Dashboard / UI work | `claude/skills/ui/SKILL.md` |
-| Backend service work | `claude/skills/backend/SKILL.md` |
-| Writing tests | `claude/skills/tests/SKILL.md` |
-| Security / auth / GDPR | `claude/skills/security/SKILL.md` |
-| Database / migrations | `claude/skills/database/SKILL.md` |
-| API endpoint design | `claude/skills/api-design/SKILL.md` |
-| Docker / deployment | `claude/skills/deployment/SKILL.md` |
+| Task type               | Read SKILL.md                          |
+| ----------------------- | -------------------------------------- |
+| Dashboard / UI work     | `claude/skills/ui/SKILL.md`            |
+| Backend service work    | `claude/skills/backend/SKILL.md`       |
+| Writing tests           | `claude/skills/tests/SKILL.md`         |
+| Security / auth / GDPR  | `claude/skills/security/SKILL.md`      |
+| Database / migrations   | `claude/skills/database/SKILL.md`      |
+| API endpoint design     | `claude/skills/api-design/SKILL.md`    |
+| Docker / deployment     | `claude/skills/deployment/SKILL.md`    |
 | Notifications / chatbot | `claude/skills/notifications/SKILL.md` |
 
 ### Rules (docs) to consult:
-| Need | Read |
-|------|------|
-| Full system docs | `claude/rules/DOCUMENTATION.md` |
-| Security guidelines | `claude/rules/SECURITY_PLANNER.md` |
-| Dashboard usage | `claude/rules/DASHBOARD_GUIDE.md` |
-| Scripts reference | `claude/rules/SCRIPTS_GUIDE.md` |
-| Dev/test setup | `claude/rules/SANDBOX_GUIDE.md` |
-| Use cases | `claude/rules/USE_CASES_AND_USER_STORIES.md` |
+| Need                | Read                                         |
+| ------------------- | -------------------------------------------- |
+| Full system docs    | `claude/rules/DOCUMENTATION.md`              |
+| Security guidelines | `claude/rules/SECURITY_PLANNER.md`           |
+| Dashboard usage     | `claude/rules/DASHBOARD_GUIDE.md`            |
+| Scripts reference   | `claude/rules/SCRIPTS_GUIDE.md`              |
+| Dev/test setup      | `claude/rules/SANDBOX_GUIDE.md`              |
+| Use cases           | `claude/rules/USE_CASES_AND_USER_STORIES.md` |
 
 ### After completing a task:
 - Update **`project-main/memory/MEMORY.md`** — append to Session Log, update Known Issues if relevant
@@ -214,14 +214,14 @@ cd project-main && npm test
 - All submissions must include: AFM employer, AFM employee, timestamp, type (IN/OUT)
 
 ### Work Card Types
-| Type | Description |
-|------|-------------|
-| `CHECK_IN` | Employee arrives at work |
+| Type        | Description                |
+| ----------- | -------------------------- |
+| `CHECK_IN`  | Employee arrives at work   |
 | `CHECK_OUT` | Employee departs from work |
 
 ### Business Roles
-| Role | Who | Access |
-|------|-----|--------|
-| `super_admin` | Platform owner | All companies, billing, system |
-| `employer` | Company owner/HR | Own company data |
-| `employee` | Worker | Check-in/out, own records |
+| Role          | Who              | Access                         |
+| ------------- | ---------------- | ------------------------------ |
+| `super_admin` | Platform owner   | All companies, billing, system |
+| `employer`    | Company owner/HR | Own company data               |
+| `employee`    | Worker           | Check-in/out, own records      |
