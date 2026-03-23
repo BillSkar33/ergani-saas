@@ -1,0 +1,53 @@
+{
+  "project": {
+    "name": "ergani-saas",
+    "version": "1.0.0",
+    "language": "el",
+    "description": "Ψηφιακή Κάρτα Εργασίας — SaaS Chatbot Platform με GPS Geofencing & ΕΡΓΑΝΗ ΙΙ Integration"
+  },
+  "claude": {
+    "model": "claude-opus-4-5",
+    "context_files": [
+      "claude/CLAUDE.md",
+      "claude/rules/*.md",
+      "project-main/memory/MEMORY.md"
+    ],
+    "skills_path": "claude/skills",
+    "rules_path": "claude/rules",
+    "commands_path": "claude/commands",
+    "agents_path": "claude/agents"
+  },
+  "code_style": {
+    "indent": 2,
+    "quotes": "single",
+    "semicolons": true,
+    "framework": "fastify",
+    "runtime": "node>=20.0.0"
+  },
+  "services": [
+    "webhook-gateway",
+    "message-processor",
+    "admin-api",
+    "super-admin-api",
+    "ergani-client",
+    "scheduler",
+    "notification-service"
+  ],
+  "database": {
+    "type": "postgresql",
+    "orm": "raw-pg",
+    "migrations_path": "project-main/infrastructure/migrations",
+    "seeds_path": "project-main/infrastructure/seeds"
+  },
+  "testing": {
+    "framework": "jest",
+    "unit_path": "project-main/tests/unit",
+    "integration_path": "project-main/tests/integration"
+  },
+  "infrastructure": {
+    "containerization": "docker-compose",
+    "cache": "redis",
+    "messaging": "kafka",
+    "reverse_proxy": "nginx"
+  }
+}
